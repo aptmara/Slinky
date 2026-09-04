@@ -132,56 +132,74 @@ void ASlinkyHUD::DrawComboFlash(const ASlinkyActor* Slinky)
 	if (FlashAlpha > 0.0f)
 	{
 		const FLinearColor FlashColor = Slinky->GetComboColor();
-		// Punchier than a subtle tint - meant to read as a real color hit on every landing, not just
-		// a faint wash.
-		DrawRect(FLinearColor(FlashColor.R, FlashColor.G, FlashColor.B, FlashAlpha * 0.32f),
+		// A real, saturated color hit on every landing rather than a faint tint.
+		DrawRect(FLinearColor(FlashColor.R, FlashColor.G, FlashColor.B, FlashAlpha * 0.45f),
 			0.0f, 0.0f, ScreenW, ScreenH);
 	}
 	if (MilestoneShake > 0.0f)
 	{
 		// A near-white punch layered on top specifically for a tier-up, so crossing a tier reads as a
 		// distinct, bigger "event" flash rather than just a stronger version of the per-step pulse.
-		DrawRect(FLinearColor(1.0f, 1.0f, 1.0f, MilestoneShake * 0.4f), 0.0f, 0.0f, ScreenW, ScreenH);
+		DrawRect(FLinearColor(1.0f, 1.0f, 1.0f, MilestoneShake * 0.55f), 0.0f, 0.0f, ScreenW, ScreenH);
 	}
 }
 
 void ASlinkyHUD::DrawComboBanner(const ASlinkyActor* Slinky)
 {
-	const float CenterX = static_cast<float>(Canvas->SizeX) * 0.5f;
+	const float ScreenW = static_cast<float>(Canvas->SizeX);
 	const float ScreenH = static_cast<float>(Canvas->SizeY);
+	const float CenterX = ScreenW * 0.5f;
 	const double Time = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
 
-	if (Slinky->GetComboCount() >= 2)
+	const bool bComboActive = Slinky->GetComboCount() >= 2;
+	if (bComboActive)
 	{
 		const FLinearColor ComboColorLinear = Slinky->GetComboColor();
+		const int32 ComboCount = Slinky->GetComboCount();
+
+		// Slowly rotating speed-lines behind the whole readout, spanning most of the screen - a cheap
+		// way to keep the banner from ever reading as a static, boring label even between landings.
+		FLinearColor BgColor = ComboColorLinear;
+		BgColor.A = 0.28f;
+		DrawStarburst(FVector2D(CenterX, ScreenH * 0.3f), 30.0f, FMath::Max(ScreenW, ScreenH) * 0.85f,
+			BgColor, 20, Time * 0.5f, 7.0f);
+
 		// Grows with the streak itself (capped) instead of a single flat size, so a long combo keeps
 		// visibly filling more of the screen rather than sitting as a small, easy-to-miss readout.
-		const float GrowthScale = 1.0f + FMath::Min(Slinky->GetComboCount() * 0.018f, 0.6f);
-		const float ComboScale = FMath::Max(Slinky->GetComboPopScale(), 0.1f) * 1.6f * GrowthScale;
-		// The label itself escalates every 10 combo (see ASlinkyActor::GetComboLabel/ComboLabelForTier)
-		// - "COMBO x7" today can read "NICE COMBO x14" a few steps later without this ever needing a
-		// separate milestone check.
-		const FString ComboText = FString::Printf(TEXT("%s x%d"), *Slinky->GetComboLabel(), Slinky->GetComboCount());
+		const float GrowthScale = 1.0f + FMath::Min(ComboCount * 0.025f, 1.1f);
+		const float PopScale = FMath::Max(Slinky->GetComboPopScale(), 0.1f);
+		// The label ("COMBO"/"NICE COMBO"/...) stays a supporting element; the number is the star of
+		// the show - a big "hit counter" look instead of one evenly-sized line of text.
+		const float LabelScale = PopScale * 1.05f * GrowthScale;
+		const float NumberScale = PopScale * 2.6f * GrowthScale;
 
-		// Dead-center-ish rather than pinned to the top edge - a corner/top readout was too easy to
-		// lose track of while actually watching the coil fall down the stairs.
-		const float ComboY = ScreenH * 0.32f;
-		// A constant light jitter (independent of the per-step pop spring) keeps the counter feeling
-		// like it's buzzing with energy even between landings, not just sitting still between pops.
-		const float IdleShakeX = FMath::Sin(Time * 14.0f) * 2.0f;
-		const float IdleShakeY = FMath::Cos(Time * 11.0f) * 1.5f;
+		// A much stronger constant jitter than before - the whole readout should feel like it's
+		// vibrating with energy, not politely sitting still between pops.
+		const float IdleShakeX = FMath::Sin(Time * 17.0f) * 6.0f + FMath::Sin(Time * 5.3f) * 3.0f;
+		const float IdleShakeY = FMath::Cos(Time * 13.0f) * 4.5f;
 
-		const FVector2D Size = DrawWobblyText(ComboText, CenterX + IdleShakeX, ComboY + IdleShakeY, ComboScale,
-			ComboColorLinear, 4.5f, 0.0f, false);
+		const float LabelY = ScreenH * 0.2f;
+		const FVector2D LabelSize = DrawWobblyText(Slinky->GetComboLabel(), CenterX + IdleShakeX,
+			LabelY + IdleShakeY, LabelScale, ComboColorLinear, 6.0f, 0.0f, false);
+
+		// The number itself: bold white fill with a thick outline in the combo's own color, so it
+		// reads as a distinct "hit marker" popping out in front of the label rather than more of the
+		// same text at a bigger size.
+		const float NumberY = LabelY + LabelSize.Y * 0.5f + 20.0f;
+		const FString NumberText = FString::Printf(TEXT("x%d"), ComboCount);
+		const FVector2D NumberSize = DrawWobblyText(NumberText, CenterX + IdleShakeX, NumberY + IdleShakeY,
+			NumberScale, FLinearColor(1.0f, 1.0f, 1.0f, 1.0f), 9.0f, 0.9f, false, ComboColorLinear);
 
 		// Empties out left-to-right as ComboTimeRemaining runs down, giving a visible countdown to
 		// when the streak will drop instead of it just vanishing without warning. Scales up with the
-		// text above it so it never looks like an afterthought next to a huge combo label.
-		const float GaugeWidth = 280.0f * GrowthScale;
-		constexpr float GaugeHeight = 10.0f;
+		// text above it so it never looks like an afterthought next to a huge combo readout.
+		const float GaugeWidth = 340.0f * GrowthScale;
+		constexpr float GaugeHeight = 14.0f;
 		const float GaugeX = CenterX - GaugeWidth * 0.5f;
-		const float GaugeY = ComboY + Size.Y * 0.5f + 16.0f;
-		DrawRect(FLinearColor(0.05f, 0.05f, 0.07f, 0.7f), GaugeX, GaugeY, GaugeWidth, GaugeHeight);
+		const float GaugeY = NumberY + NumberSize.Y * 0.5f + 22.0f;
+		DrawRect(FLinearColor(0.04f, 0.04f, 0.06f, 0.8f), GaugeX - 3.0f, GaugeY - 3.0f,
+			GaugeWidth + 6.0f, GaugeHeight + 6.0f);
+		DrawRect(FLinearColor(0.05f, 0.05f, 0.07f, 0.85f), GaugeX, GaugeY, GaugeWidth, GaugeHeight);
 		const float Fill = Slinky->GetComboWindowRemaining01();
 		if (Fill > 0.0f)
 		{
@@ -198,33 +216,36 @@ void ASlinkyHUD::DrawComboBanner(const ASlinkyActor* Slinky)
 
 		// Big enough to dominate the screen for its brief moment - a tier-up is meant to interrupt
 		// and demand attention, not politely add a line near the top.
-		const float MilestoneScale = (2.6f + 1.6f * MilestoneAlpha) * (1.0f + 0.3f * Shake);
-		const float BannerCenterY = ScreenH * 0.42f;
+		const float MilestoneScale = (3.2f + 2.0f * MilestoneAlpha) * (1.0f + 0.35f * Shake);
+		const float BannerCenterY = ScreenH * 0.45f;
 
 		// Screen-shake jitters the whole banner (text + starburst) together, not just the text glyphs,
 		// so a tier-up reads as a genuine impact rather than only the letters wobbling.
-		const float ShakeX = FMath::Sin(Time * 53.0f) * Shake * 16.0f;
-		const float ShakeY = FMath::Cos(Time * 61.0f) * Shake * 11.0f;
+		const float ShakeX = FMath::Sin(Time * 53.0f) * Shake * 22.0f;
+		const float ShakeY = FMath::Cos(Time * 61.0f) * Shake * 15.0f;
 
 		FLinearColor TextColor = ComboColorLinear;
 		TextColor.A = FMath::Clamp(MilestoneAlpha, 0.0f, 1.0f);
 
-		// Starburst now reaches most of the way to the screen edges so the tier-up reads as a real
-		// explosion filling the frame, not a modest badge behind the text.
-		const float ScreenDiagonalHalf = 0.5f * FMath::Sqrt(
-			FMath::Square(static_cast<float>(Canvas->SizeX)) + FMath::Square(ScreenH));
+		// A dark full-width band behind the banner text so it reads clearly even mid-flash, then the
+		// starburst reaching most of the way to the screen edges so the tier-up feels like a real
+		// explosion filling the frame rather than a modest badge.
+		DrawRect(FLinearColor(0.0f, 0.0f, 0.0f, 0.35f * TextColor.A), 0.0f, BannerCenterY - 130.0f * MilestoneScale,
+			ScreenW, 260.0f * MilestoneScale);
+		const float ScreenDiagonalHalf = 0.5f * FMath::Sqrt(FMath::Square(ScreenW) + FMath::Square(ScreenH));
 		DrawStarburst(FVector2D(CenterX + ShakeX, BannerCenterY + ShakeY),
-			70.0f * MilestoneScale, ScreenDiagonalHalf * 0.72f, TextColor, 16, Time * 2.4f);
+			80.0f * MilestoneScale, ScreenDiagonalHalf * 0.78f, TextColor, 18, Time * 2.6f, 6.0f);
 
 		// Rainbow cycling only for the milestone banner - the everyday combo counter stays one solid
 		// color so the rare, extra-loud rainbow treatment keeps reading as special.
 		DrawWobblyText(Milestone, CenterX + ShakeX, BannerCenterY + ShakeY, MilestoneScale, TextColor,
-			9.0f + Shake * 12.0f, 1.7f, true);
+			12.0f + Shake * 16.0f, 1.7f, true, FLinearColor(0.02f, 0.02f, 0.03f, TextColor.A));
 	}
 }
 
 FVector2D ASlinkyHUD::DrawWobblyText(const FString& Text, float CenterX, float Y, float Scale,
-	const FLinearColor& Color, float WobbleAmount, float WobblePhase, bool bRainbow) const
+	const FLinearColor& Color, float WobbleAmount, float WobblePhase, bool bRainbow,
+	const FLinearColor& OutlineColor) const
 {
 	if (Text.IsEmpty() || !Canvas || !GEngine)
 	{
@@ -270,15 +291,18 @@ FVector2D ASlinkyHUD::DrawWobblyText(const FString& Text, float CenterX, float Y
 		}
 	}
 
-	// Drawing the glyph eight times at a small offset around itself fakes a solid outline (Canvas
-	// text has no native stroke) - a cheap comic-book "inked" look that keeps light text readable
-	// over the bright, busy stair backdrop.
-	static const FVector2D OutlineOffsets[] = {
-		{-1.5f, -1.5f}, {1.5f, -1.5f}, {-1.5f, 1.5f}, {1.5f, 1.5f},
-		{0.0f, -2.0f}, {0.0f, 2.0f}, {-2.0f, 0.0f}, {2.0f, 0.0f},
+	// Drawing the glyph repeatedly in a ring around itself fakes a solid outline (Canvas text has no
+	// native stroke) - a cheap comic-book "inked" look that keeps text readable over the bright, busy
+	// stair backdrop. The ring's reach scales with glyph size so a huge combo number still reads with
+	// a bold, thick stroke instead of a hairline that gets proportionally thinner as text grows.
+	const float OutlineReach = FMath::Clamp(2.0f + Scale * 1.3f, 2.0f, 16.0f);
+	static const FVector2D UnitOffsets[] = {
+		{-1.0f, -1.0f}, {1.0f, -1.0f}, {-1.0f, 1.0f}, {1.0f, 1.0f},
+		{0.0f, -1.0f}, {0.0f, 1.0f}, {-1.0f, 0.0f}, {1.0f, 0.0f},
+		{-0.7f, -0.7f}, {0.7f, -0.7f}, {-0.7f, 0.7f}, {0.7f, 0.7f},
 	};
-	FColor OutlineColor(18, 14, 22);
-	OutlineColor.A = static_cast<uint8>(FMath::Clamp(Color.A, 0.0f, 1.0f) * 255.0f);
+	FColor OutlineFColor = OutlineColor.ToFColor(true);
+	OutlineFColor.A = static_cast<uint8>(FMath::Clamp(Color.A, 0.0f, 1.0f) * 255.0f);
 
 	float PenX = CenterX - TotalWidth * 0.5f;
 	for (int32 Index = 0; Index < Text.Len(); ++Index)
@@ -291,10 +315,11 @@ FVector2D ASlinkyHUD::DrawWobblyText(const FString& Text, float CenterX, float Y
 
 		if (!Glyph.Equals(TEXT(" ")))
 		{
-			Canvas->SetDrawColor(OutlineColor);
-			for (const FVector2D& Offset : OutlineOffsets)
+			Canvas->SetDrawColor(OutlineFColor);
+			for (const FVector2D& Unit : UnitOffsets)
 			{
-				Canvas->DrawText(Font, Glyph, PenX + Offset.X, GlyphY + Offset.Y, Scale, Scale);
+				Canvas->DrawText(Font, Glyph, PenX + Unit.X * OutlineReach, GlyphY + Unit.Y * OutlineReach,
+					Scale, Scale);
 			}
 
 			FLinearColor GlyphColor = Color;
@@ -315,7 +340,7 @@ FVector2D ASlinkyHUD::DrawWobblyText(const FString& Text, float CenterX, float Y
 }
 
 void ASlinkyHUD::DrawStarburst(const FVector2D& Center, float InnerRadius, float OuterRadius,
-	const FLinearColor& Color, int32 RayCount, float RotationOffset) const
+	const FLinearColor& Color, int32 RayCount, float RotationOffset, float Thickness) const
 {
 	if (!Canvas || RayCount <= 0)
 	{
@@ -328,6 +353,6 @@ void ASlinkyHUD::DrawStarburst(const FVector2D& Center, float InnerRadius, float
 	{
 		const float Angle = (UE_TWO_PI * Index) / RayCount + RotationOffset;
 		const FVector2D Direction(FMath::Cos(Angle), FMath::Sin(Angle));
-		Canvas->K2_DrawLine(Center + Direction * InnerRadius, Center + Direction * OuterRadius, 4.0f, RayColor);
+		Canvas->K2_DrawLine(Center + Direction * InnerRadius, Center + Direction * OuterRadius, Thickness, RayColor);
 	}
 }

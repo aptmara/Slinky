@@ -920,8 +920,8 @@ void ASlinkyActor::TriggerStepEffects(const FVector& ImpactLocation, bool bTierU
 		? 620.0f
 		: FMath::Clamp(180.0f + ComboCount * 6.0f, 180.0f, 420.0f);
 	CameraPunchVelocity -= PunchStrength;
-	StepPopVelocity += bTierUp ? 12.0f : 6.0f;
-	ComboPopVelocity += bTierUp ? 20.0f : 7.0f;
+	StepPopVelocity += bTierUp ? 22.0f : 12.0f;
+	ComboPopVelocity += bTierUp ? 36.0f : 16.0f;
 }
 
 void ASlinkyActor::UpdateStepEffects(float DeltaTime)
