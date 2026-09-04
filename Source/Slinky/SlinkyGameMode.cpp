@@ -2,6 +2,7 @@
 
 #include "SlinkyGameMode.h"
 #include "SlinkyActor.h"
+#include "SlinkyGameInstance.h"
 #include "SlinkyHUD.h"
 #include "SlinkyPlayerController.h"
 #include "SlinkyStaircase.h"
@@ -37,6 +38,22 @@ void ASlinkyGameMode::StartPlay()
 
 	Staircase = World->SpawnActor<ASlinkyStaircase>(FVector::ZeroVector, FRotator::ZeroRotator);
 	Slinky = World->SpawnActor<ASlinkyActor>(FVector(60.0, 0.0, 0.0), FRotator::ZeroRotator);
+
+	// "つづきから" on the title screen sets this before OpenLevel-ing here; consumed once so a
+	// later in-level restart (R key) doesn't keep re-seeding the record or re-teleporting on top
+	// of wherever the player has since fallen to.
+	if (USlinkyGameInstance* GameInstance = GetGameInstance<USlinkyGameInstance>())
+	{
+		if (GameInstance->ConsumePendingContinue() && Slinky)
+		{
+			Slinky->ApplyContinueRecord(GameInstance->GetSavedBestCombo());
+			Slinky->TeleportToDepth(GameInstance->GetContinueDepthMeters());
+			if (Staircase)
+			{
+				Staircase->SnapStepsToSlinky();
+			}
+		}
+	}
 
 	// Fixed indoor lighting: a soft daylight sun through the entrance window, and a gentle fog just
 	// dense enough to give the endless recycled stairs some visible falloff into the distance. This
@@ -114,13 +131,13 @@ void ASlinkyGameMode::StartPlay()
 	SpawnEntranceRoom();
 }
 
-void ASlinkyGameMode::SpawnBlock(const FVector& Center, const FVector& Size, const TCHAR* MaterialPath)
+AStaticMeshActor* ASlinkyGameMode::SpawnBlock(const FVector& Center, const FVector& Size, const TCHAR* MaterialPath)
 {
 	UWorld* World = GetWorld();
 	AStaticMeshActor* Block = World ? World->SpawnActor<AStaticMeshActor>(Center, FRotator::ZeroRotator) : nullptr;
 	if (!Block)
 	{
-		return;
+		return nullptr;
 	}
 
 	UStaticMeshComponent* Mesh = Block->GetStaticMeshComponent();
@@ -146,53 +163,168 @@ void ASlinkyGameMode::SpawnBlock(const FVector& Center, const FVector& Size, con
 	// changing the mesh logs "Calling SetStaticMesh ... but Mobility is Static" and leaves the
 	// component's render state out of sync with what it's actually showing.
 	Mesh->SetMobility(EComponentMobility::Static);
+	return Block;
 }
 
 void ASlinkyGameMode::SpawnEntranceRoom()
 {
-	const TCHAR* Plaster = TEXT("/Game/Slinky/M_Plaster.M_Plaster");
-	const TCHAR* Wood = TEXT("/Game/Slinky/M_Wood.M_Wood");
+	// The plaster entry-room walls that used to sit here (Y=350ish, right around the 0m mark) are
+	// removed - unwanted "special terrain" this close to the start. The window itself is kept
+	// below, just commented out, in case it's wanted back later.
 
-	// Sits just behind the first several steps (Y=0) and in front of both backdrop cards.
-	const float WallY = 350.0f;
-	const float FrameY = 320.0f; // In front of the wall face, so the casing reads as applied trim.
+	// const TCHAR* Wood = TEXT("/Game/Slinky/M_Wood.M_Wood");
+	// const float FrameY = 320.0f; // In front of the (now-removed) wall face, so the casing reads as applied trim.
+	// const float WinMinX = 0.0f, WinMaxX = 300.0f;
+	// const float WinMinZ = 250.0f, WinMaxZ = 550.0f;
+	// constexpr float WallThickness = 20.0f;
+	//
+	// // Wood casing around the opening, overlapping its edge by CasingOverlap so it reads as applied
+	// // trim rather than a gap-filling patch, plus one vertical and one horizontal muntin splitting
+	// // the opening into four panes.
+	// constexpr float CasingOverlap = 30.0f;
+	// constexpr float CasingDepth = 36.0f;
+	// constexpr float MuntinDepth = 18.0f;
+	// const float WinCenterX = (WinMinX + WinMaxX) * 0.5f;
+	// const float WinCenterZ = (WinMinZ + WinMaxZ) * 0.5f;
+	//
+	// SpawnBlock(FVector(WinCenterX, FrameY, WinMaxZ), FVector(WinMaxX - WinMinX + CasingOverlap * 2.0f, WallThickness, CasingDepth), Wood);
+	// SpawnBlock(FVector(WinCenterX, FrameY, WinMinZ), FVector(WinMaxX - WinMinX + CasingOverlap * 2.0f, WallThickness, CasingDepth), Wood);
+	// SpawnBlock(FVector(WinMinX, FrameY, WinCenterZ), FVector(CasingDepth, WallThickness, WinMaxZ - WinMinZ + CasingOverlap * 2.0f), Wood);
+	// SpawnBlock(FVector(WinMaxX, FrameY, WinCenterZ), FVector(CasingDepth, WallThickness, WinMaxZ - WinMinZ + CasingOverlap * 2.0f), Wood);
+	// SpawnBlock(FVector(WinCenterX, FrameY, WinCenterZ), FVector(WinMaxX - WinMinX, WallThickness, MuntinDepth), Wood);
+	// SpawnBlock(FVector(WinCenterX, FrameY, WinCenterZ), FVector(MuntinDepth, WallThickness, WinMaxZ - WinMinZ), Wood);
+}
 
-	// Wall and window-opening bounds, in world X/Z. The wall is built as the four rectangles that
-	// remain once the window rectangle is cut out of it, since there is no runtime CSG subtract.
-	const float WallMinX = -450.0f, WallMaxX = 750.0f;
-	const float WallMinZ = -350.0f, WallMaxZ = 820.0f;
-	const float WinMinX = 0.0f, WinMaxX = 300.0f;
-	const float WinMinZ = 250.0f, WinMaxZ = 550.0f;
-	constexpr float WallThickness = 20.0f;
+bool ASlinkyGameMode::ShouldColumnHaveWindowFrame(int32 WindowCol)
+{
+	// A deterministic integer hash rather than FMath::Rand - the same column must always decide
+	// the same way regardless of when/from which direction it's first seen, or the frame would pop
+	// in and out as the camera scrolls back and forth across it. Roughly one window in four.
+	//
+	// A single multiply-then-shift (the previous version here) is NOT enough: multiplying by an
+	// odd constant leaves the result's low bits a near-linear function of the input's low bits
+	// (2654435761 % 4 == 1, so (WindowCol * 2654435761) % 4 == WindowCol % 4 exactly), and reading
+	// those low bits gave a striking real bug - always true for negative columns, always false for
+	// positive ones. Thomas Wang's 32-bit mix below actually spreads entropy into the low bits
+	// before they're read.
+	uint32 Hash = static_cast<uint32>(WindowCol);
+	Hash = (Hash ^ 61u) ^ (Hash >> 16);
+	Hash = Hash + (Hash << 3);
+	Hash = Hash ^ (Hash >> 4);
+	Hash = Hash * 0x27d4eb2du;
+	Hash = Hash ^ (Hash >> 15);
+	return (Hash % 4) == 0;
+}
 
-	// Each wall segment is given as (MinX, MaxX, MinZ, MaxZ); Center and Size are derived from that
-	// one rectangle so there is only one place per segment where its bounds are stated.
-	const auto SpawnWallSegment = [this, Plaster, WallY, WallThickness](float MinX, float MaxX, float MinZ, float MaxZ)
+void ASlinkyGameMode::SpawnWindowFrame(int32 WindowCol, TArray<AStaticMeshActor*>& OutBlocks)
+{
+	if (!Staircase || Staircase->StepDepth <= 0.0f)
 	{
-		SpawnBlock(FVector((MinX + MaxX) * 0.5f, WallY, (MinZ + MaxZ) * 0.5f),
-			FVector(MaxX - MinX, WallThickness, MaxZ - MinZ), Plaster);
+		return;
+	}
+
+	const TCHAR* Wood = TEXT("/Game/Slinky/M_Wood.M_Wood");
+	const float StepDepthValue = Staircase->StepDepth;
+	const float StepRiseValue = Staircase->StepRise;
+	const FVector2D Anchor = Staircase->GetShaderBoundaryOrigin();
+
+	// Mirrors M_RoomBackdrop's Custom "RoomSplit" HLSL node's own window-placement math exactly
+	// (stepsPerWindow/windowWidth/windowHeight/windowHeightOffset/BoundaryMargin are that node's
+	// literals, copied here rather than exposed as parameters, since only this function needs
+	// them) - so this 3D trim lands precisely on top of the see-through hole the shader already
+	// cuts for this column, rather than this function making its own separate decision about where
+	// windows are.
+	constexpr float StepsPerWindow = 6.0f;
+	constexpr float WindowWidth = 220.0f;
+	constexpr float WindowHeight = 220.0f;
+	constexpr float WindowHeightOffset = 460.0f;
+	constexpr float BoundaryMargin = -20.0f;
+
+	const float WindowSpacingX = StepDepthValue * StepsPerWindow;
+	const float WindowCenterXLocal = (static_cast<float>(WindowCol) + 0.5f) * WindowSpacingX;
+	const float WindowCenterX = WindowCenterXLocal + Anchor.X;
+	const float ColStepIndex = FMath::FloorToFloat(WindowCenterXLocal / StepDepthValue);
+	const float ColBoundaryZ = Anchor.Y - ColStepIndex * StepRiseValue + BoundaryMargin;
+	const float WindowCenterZ = ColBoundaryZ + WindowHeightOffset;
+
+	// In front of the backdrop card's near face (RoomDistanceY minus half its 100uu thickness) by
+	// the same margin ASlinkyGameMode::SpawnEntranceRoom used to give its one-off entrance window's
+	// casing, so this trim reads as applied to the wall rather than floating in front of it.
+	const float FrameY = RoomDistanceY - 50.0f - 20.0f;
+	constexpr float ProtrusionY = 20.0f;
+	// BarWidth matches the shader's own frameWidth exactly, so a framed window's 3D trim lines up
+	// with the flat painted wood-frame mask still visible on every other (unframed) window.
+	constexpr float BarWidth = 26.0f;
+	constexpr float BarOverlap = 20.0f;
+	constexpr float MuntinWidth = 14.0f;
+
+	const float WinMinX = WindowCenterX - WindowWidth * 0.5f;
+	const float WinMaxX = WindowCenterX + WindowWidth * 0.5f;
+	const float WinMinZ = WindowCenterZ - WindowHeight * 0.5f;
+	const float WinMaxZ = WindowCenterZ + WindowHeight * 0.5f;
+
+	const auto AddBlock = [this, Wood, &OutBlocks](const FVector& Center, const FVector& Size)
+	{
+		if (AStaticMeshActor* Block = SpawnBlock(Center, Size, Wood))
+		{
+			OutBlocks.Add(Block);
+		}
 	};
 
-	SpawnWallSegment(WallMinX, WallMaxX, WinMaxZ, WallMaxZ); // Top strip, above the window.
-	SpawnWallSegment(WallMinX, WallMaxX, WallMinZ, WinMinZ); // Bottom strip, below the window.
-	SpawnWallSegment(WallMinX, WinMinX, WinMinZ, WinMaxZ);   // Left strip, beside the window.
-	SpawnWallSegment(WinMaxX, WallMaxX, WinMinZ, WinMaxZ);   // Right strip, beside the window.
+	AddBlock(FVector(WindowCenterX, FrameY, WinMaxZ), FVector(WindowWidth + BarOverlap * 2.0f, ProtrusionY, BarWidth));
+	AddBlock(FVector(WindowCenterX, FrameY, WinMinZ), FVector(WindowWidth + BarOverlap * 2.0f, ProtrusionY, BarWidth));
+	AddBlock(FVector(WinMinX, FrameY, WindowCenterZ), FVector(BarWidth, ProtrusionY, WindowHeight + BarOverlap * 2.0f));
+	AddBlock(FVector(WinMaxX, FrameY, WindowCenterZ), FVector(BarWidth, ProtrusionY, WindowHeight + BarOverlap * 2.0f));
+	AddBlock(FVector(WindowCenterX, FrameY, WindowCenterZ), FVector(WindowWidth, ProtrusionY, MuntinWidth));
+	AddBlock(FVector(WindowCenterX, FrameY, WindowCenterZ), FVector(MuntinWidth, ProtrusionY, WindowHeight));
+}
 
-	// Wood casing around the opening, overlapping its edge by CasingOverlap so it reads as applied
-	// trim rather than a gap-filling patch, plus one vertical and one horizontal muntin splitting
-	// the opening into four panes.
-	constexpr float CasingOverlap = 30.0f;
-	constexpr float CasingDepth = 36.0f;
-	constexpr float MuntinDepth = 18.0f;
-	const float WinCenterX = (WinMinX + WinMaxX) * 0.5f;
-	const float WinCenterZ = (WinMinZ + WinMaxZ) * 0.5f;
+void ASlinkyGameMode::UpdateWindowFrames(const FVector& CameraLocation)
+{
+	if (!Staircase || Staircase->StepDepth <= 0.0f)
+	{
+		return;
+	}
 
-	SpawnBlock(FVector(WinCenterX, FrameY, WinMaxZ), FVector(WinMaxX - WinMinX + CasingOverlap * 2.0f, WallThickness, CasingDepth), Wood);
-	SpawnBlock(FVector(WinCenterX, FrameY, WinMinZ), FVector(WinMaxX - WinMinX + CasingOverlap * 2.0f, WallThickness, CasingDepth), Wood);
-	SpawnBlock(FVector(WinMinX, FrameY, WinCenterZ), FVector(CasingDepth, WallThickness, WinMaxZ - WinMinZ + CasingOverlap * 2.0f), Wood);
-	SpawnBlock(FVector(WinMaxX, FrameY, WinCenterZ), FVector(CasingDepth, WallThickness, WinMaxZ - WinMinZ + CasingOverlap * 2.0f), Wood);
-	SpawnBlock(FVector(WinCenterX, FrameY, WinCenterZ), FVector(WinMaxX - WinMinX, WallThickness, MuntinDepth), Wood);
-	SpawnBlock(FVector(WinCenterX, FrameY, WinCenterZ), FVector(MuntinDepth, WallThickness, WinMaxZ - WinMinZ), Wood);
+	constexpr float StepsPerWindow = 6.0f;
+	const float WindowSpacingX = Staircase->StepDepth * StepsPerWindow;
+	const float AnchorX = Staircase->GetShaderBoundaryOrigin().X;
+
+	// Which window columns are currently within the backdrop card's width, with one extra column
+	// of margin on each side so a frame is already in place before it scrolls into view.
+	const float HalfRange = BackdropWidth * 0.5f + WindowSpacingX;
+	const int32 FirstCol = FMath::FloorToInt((CameraLocation.X - HalfRange - AnchorX) / WindowSpacingX);
+	const int32 LastCol = FMath::FloorToInt((CameraLocation.X + HalfRange - AnchorX) / WindowSpacingX);
+
+	for (auto It = WindowFrameBlocksByColumn.CreateIterator(); It; ++It)
+	{
+		if (It->Key < FirstCol || It->Key > LastCol)
+		{
+			for (AStaticMeshActor* Block : It->Value)
+			{
+				if (Block)
+				{
+					Block->Destroy();
+				}
+			}
+			It.RemoveCurrent();
+		}
+	}
+
+	for (int32 Col = FirstCol; Col <= LastCol; ++Col)
+	{
+		if (WindowFrameBlocksByColumn.Contains(Col))
+		{
+			continue;
+		}
+		// Recorded either way (even an empty array for "decided against") so this column's coin
+		// flip is never re-rolled while it stays in range.
+		TArray<AStaticMeshActor*>& Blocks = WindowFrameBlocksByColumn.FindOrAdd(Col);
+		if (ShouldColumnHaveWindowFrame(Col))
+		{
+			SpawnWindowFrame(Col, Blocks);
+		}
+	}
 }
 
 void ASlinkyGameMode::Tick(float DeltaTime)
@@ -233,6 +365,8 @@ void ASlinkyGameMode::Tick(float DeltaTime)
 		BackdropMaterial->SetScalarParameterValue(TEXT("AnchorX"), BoundaryOrigin.X);
 		BackdropMaterial->SetScalarParameterValue(TEXT("AnchorZ"), BoundaryOrigin.Y);
 	}
+
+	UpdateWindowFrames(CameraLocation);
 }
 
 const TArray<ASlinkyGameMode::FDepthZone>& ASlinkyGameMode::GetDepthZones()

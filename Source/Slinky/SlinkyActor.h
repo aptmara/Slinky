@@ -27,6 +27,13 @@ public:
 	void EndDrag();
 	void ResetSlinky();
 
+	// Places the coil onto whatever tread is nearest the given depth (meters below the top step,
+	// same convention as ASlinkyGameMode::GetCurrentDepthMeters()) and snaps the camera straight
+	// there too, instead of leaving it to visibly pan down from the origin over a couple of
+	// seconds. Only meant to be called once, right after BeginPlay - see
+	// ASlinkyGameMode::StartPlay's "つづきから" handling.
+	void TeleportToDepth(float DepthMeters);
+
 	bool IsDragging() const { return GrabbedBody != nullptr; }
 	int32 GetStepCount() const { return SuccessfulContacts; }
 	FVector GetCenterLocation() const;
@@ -57,9 +64,14 @@ public:
 	// "GREAT COMBO", etc. - so the on-screen text itself keeps changing every 10 combo instead of
 	// just the trailing number. See ComboLabelForTier() in the .cpp for the full ladder.
 	FString GetComboLabel() const;
-	// 0 outside a flash, ramping to 1 the instant any step lands and decaying back to 0 - drives a
-	// full-screen color flash so even an off-milestone step still reads as an "impact".
-	float GetComboFlashAlpha() const { return ComboFlashAlpha; }
+	// 1 the instant any step lands, decaying back to 0 over well under a second - drives a brief,
+	// screen-center "hit pop" of the combo number (see ASlinkyHUD::DrawComboBanner) that appears for
+	// the landing and then gets out of the way, rather than sitting on screen permanently.
+	float GetComboPopupAlpha01() const { return ComboPopupAlpha; }
+
+	// Seeds BestCombo from a loaded save file when a run starts via "つづきから" (Continue) on the
+	// title screen - see ASlinkyGameMode::StartPlay. Never lowers an already-higher value.
+	void ApplyContinueRecord(int32 InBestCombo) { BestCombo = FMath::Max(BestCombo, InBestCombo); }
 
 	// Live in-game tuning (see ASlinkyPlayerController's Tab/[ ] keys, and USlinkyControlPanel).
 	// Editable in the level editor too. PhysicsNodeCount/SegmentsPerTurn/TetherSegmentCount stay
@@ -116,6 +128,12 @@ public:
 	void AdjustTuningParam(float Direction);
 	FString GetTuningParamDisplay() const;
 
+	// Puts every live-tunable coil parameter back to this class's compile-time defaults (read off
+	// the CDO, so there's exactly one place each default is stated) and re-applies them the same
+	// way AdjustTuningParam does. Used by the pause menu's "デフォルトに戻す" - see
+	// ASlinkyStaircase::ResetToDefaults() for the matching stair-side reset.
+	void ResetTuningToDefaults();
+
 	// Re-applies linear drive stiffness and physical-material tuning from the current
 	// MaximumNodeSpacing/AxialStiffnessScale/DampingScale/Restitution/Friction values. Safe to call
 	// anytime - it only touches drive/limit and material numbers, never recreates joints or nodes -
@@ -171,6 +189,11 @@ private:
 	void ConfigureNode(UStaticMeshComponent* Node);
 	FVector ComputeNodeScale() const;
 	ASlinkyStaircase* FindStaircase() const;
+
+	// Shared by ResetSlinky() (near its own current position) and TeleportToDepth() (near a
+	// depth-derived position): stops physics on every node and lays them out at rest on whichever
+	// tread is nearest WorldX, without touching combo/effects state - see each caller for that part.
+	void SnapOntoStaircaseNear(float WorldX);
 	void ConfigureConstraints();
 	void UpdateConstraintFlexibility();
 	FVector SampleCenterline(float Alpha) const;
@@ -184,14 +207,16 @@ private:
 	// landed step, before TriggerStepEffects() so the burst color already reflects the new combo
 	// count. Returns true if this step crossed a tier, so TriggerStepEffects() can scale the burst up.
 	bool RegisterCombo();
-	// Spawns one shrinking impact ring plus a burst of gravity-affected sparkle cubes at
-	// ImpactLocation, and kicks the camera-punch and pop-scale springs - bigger, when bTierUp is true,
-	// to match the milestone banner RegisterCombo() just staged. Purely cosmetic - has no effect on
-	// SuccessfulContacts/ComboCount, which RegisterGroundContact/RegisterCombo already updated by the
-	// time this runs.
+	// Spawns a burst of gravity-affected sparkle cubes (plus, once the combo is actually building, a
+	// second burst of small bright glint spheres on top) at ImpactLocation, and kicks the
+	// camera-punch and pop-scale springs - all bigger, both in count and individually, the higher
+	// ComboCount climbs, and bigger still when bTierUp is true, so a long streak reads as an
+	// escalating, increasingly lavish payoff rather than the same burst every time. Purely cosmetic -
+	// has no effect on SuccessfulContacts/ComboCount, which RegisterGroundContact/RegisterCombo
+	// already updated by the time this runs.
 	void TriggerStepEffects(const FVector& ImpactLocation, bool bTierUp);
-	// Advances every active ring/sparkle's age and position and re-pushes their instance transforms,
-	// growing/shrinking InstancedStaticMeshComponent instance counts to match - called once per Tick.
+	// Advances every active sparkle/glint's age and position and re-pushes their instance transforms,
+	// growing/shrinking each pool's instance count to match - called once per Tick.
 	void UpdateStepEffects(float DeltaTime);
 	// Vivid, high-saturation color for the given combo count - cycles hue so a long streak keeps
 	// visibly changing rather than settling on one color.
@@ -220,20 +245,24 @@ private:
 	UPROPERTY(VisibleAnywhere)
 	TObjectPtr<UInstancedStaticMeshComponent> TetherSegments;
 
-	// Step-landing presentation: a shrinking ring plus a burst of tumbling sparkle cubes, both purely
-	// visual InstancedStaticMeshComponents like HelixSegments/TetherSegments above - see
+	// Step-landing presentation: a burst of tumbling sparkle cubes, a purely visual
+	// InstancedStaticMeshComponent like HelixSegments/TetherSegments above - see
 	// TriggerStepEffects()/UpdateStepEffects().
-	UPROPERTY(VisibleAnywhere)
-	TObjectPtr<UInstancedStaticMeshComponent> StepRings;
-
 	UPROPERTY(VisibleAnywhere)
 	TObjectPtr<UInstancedStaticMeshComponent> StepSparkles;
 
-	UPROPERTY()
-	TObjectPtr<UMaterialInstanceDynamic> RingMaterial;
+	// A second, smaller burst layered on top of StepSparkles once the combo is actually building -
+	// bright near-white spheres rather than combo-colored cubes, reading as "sparkle/glint" glints
+	// scattered among the main burst. Its count scales up with ComboCount (see TriggerStepEffects()),
+	// so a long streak looks progressively more lavish instead of the same burst every landing.
+	UPROPERTY(VisibleAnywhere)
+	TObjectPtr<UInstancedStaticMeshComponent> StepGlints;
 
 	UPROPERTY()
 	TObjectPtr<UMaterialInstanceDynamic> SparkleMaterial;
+
+	UPROPERTY()
+	TObjectPtr<UMaterialInstanceDynamic> GlintMaterial;
 
 	UPROPERTY(VisibleAnywhere)
 	TObjectPtr<ACameraActor> FollowCameraActor;
@@ -258,18 +287,9 @@ private:
 	ETuningParam SelectedTuningParam = ETuningParam::CompactLength;
 	bool bResumePhysicsNextTick = false;
 
-	// One shrinking impact ring spawned per landed step - see TriggerStepEffects()/UpdateStepEffects().
-	// Array index always matches the ring's instance index in StepRings (both grow/shrink together,
-	// oldest-first), so no separate handle/ID bookkeeping is needed.
-	struct FStepRingFx
-	{
-		FVector Location = FVector::ZeroVector;
-		float Age = 0.0f;
-		float Lifetime = 0.42f;
-	};
-
 	// One tumbling sparkle cube from a step-landing burst - see TriggerStepEffects()/
-	// UpdateStepEffects(). Same array-index-matches-instance-index convention as FStepRingFx.
+	// UpdateStepEffects(). Array index always matches the sparkle's instance index in StepSparkles
+	// (both grow/shrink together, oldest-first), so no separate handle/ID bookkeeping is needed.
 	struct FStepSparkleFx
 	{
 		FVector Location = FVector::ZeroVector;
@@ -281,8 +301,17 @@ private:
 		float BaseScale = 0.5f;
 	};
 
-	TArray<FStepRingFx> ActiveRings;
 	TArray<FStepSparkleFx> ActiveSparkles;
+	// Same FStepSparkleFx shape, own pool/component (StepGlints) - see TriggerStepEffects().
+	TArray<FStepSparkleFx> ActiveGlints;
+
+	// Shared per-Tick update for one sparkle/glint pool: ages entries out, integrates gravity, and
+	// resizes/repositions Component's instances to match Pool. Factored out because the sparkle cube
+	// pool and the glint sphere pool need the exact same lifecycle, just at different scales. Declared
+	// here (rather than up with TriggerStepEffects()/UpdateStepEffects()) because it needs
+	// FStepSparkleFx to already be a complete type.
+	void UpdateSparklePool(TArray<FStepSparkleFx>& Pool, UInstancedStaticMeshComponent* Component, float DeltaTime,
+		float ScaleMultiplier);
 
 	// How long a landed step keeps the combo alive - land the next one before this runs out or
 	// ComboCount drops back to 0 (see Tick()'s countdown).
@@ -315,10 +344,10 @@ private:
 	// so it can settle out visually before the text itself fades - see SpringToward() calls in Tick().
 	float MilestoneShake = 0.0f;
 
-	// Full-screen flash strength - set to 1 on every landed step and decayed in Tick(), giving even
-	// an off-tier step a quick, poppy screen-color pulse instead of only the milestone banner reading
-	// as an "event".
-	float ComboFlashAlpha = 0.0f;
+	// Combo "hit pop" strength - set to 1 on every landed step and decayed in Tick() (see
+	// GetComboPopupAlpha01()), driving a brief screen-center number pop that fades out well under a
+	// second later instead of sitting on screen permanently.
+	float ComboPopupAlpha = 0.0f;
 
 	static constexpr int32 PhysicsNodeCount = 31;
 	static constexpr int32 SegmentsPerTurn = 9;

@@ -7,6 +7,7 @@
 class ASlinkyActor;
 class ASlinkyStaircase;
 class USlinkyControlPanel;
+class USlinkyPauseMenu;
 
 UCLASS()
 class ASlinkyPlayerController : public APlayerController
@@ -15,6 +16,11 @@ class ASlinkyPlayerController : public APlayerController
 
 public:
 	ASlinkyPlayerController();
+
+	// Called by USlinkyPauseMenu after resetting the staircase/coil to defaults, so the control
+	// panel's cached row values (and their on-screen readouts) pick up the new numbers instead of
+	// silently going stale until the player next nudges a slider.
+	void RefreshControlPanelFromLiveValues();
 
 protected:
 	virtual void BeginPlay() override;
@@ -44,6 +50,8 @@ private:
 	void IncreaseCoilTuningParam();
 	void DecreaseCoilTuningParam();
 
+	void TogglePauseMenu();
+
 	UPROPERTY()
 	TObjectPtr<ASlinkyActor> Slinky;
 
@@ -54,6 +62,11 @@ private:
 	// SetTargets() is called on it as soon as AcquireSlinky/AcquireStaircase both succeed.
 	UPROPERTY()
 	TObjectPtr<USlinkyControlPanel> ControlPanel;
+
+	// The always-in-viewport pause overlay - see USlinkyPauseMenu. Created alongside ControlPanel
+	// in BeginPlay and given a higher Z-order so it renders above it when opened.
+	UPROPERTY()
+	TObjectPtr<USlinkyPauseMenu> PauseMenu;
 
 	bool bControlPanelTargetsSet = false;
 };

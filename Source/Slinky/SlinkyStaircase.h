@@ -48,6 +48,18 @@ public:
 	void SetStepRise(float NewValue);
 	void SetRiserThickness(float NewValue);
 
+	// Puts StepDepth/StepRise/RiserThickness back to this class's compile-time defaults (read off
+	// the CDO) via the anchor-aware setters above. Used by the pause menu's "デフォルトに戻す" -
+	// see ASlinkyActor::ResetTuningToDefaults() for the matching coil-side reset.
+	void ResetToDefaults();
+
+	// Immediately rebuilds the visible tread/riser window around wherever the slinky actually is,
+	// instead of waiting for this actor's own 0.25s tick interval to notice. Normally that lag is
+	// unnoticeable (ResetSlinky() only ever moves the coil a few steps), but
+	// ASlinkyActor::TeleportToDepth() (continuing from a save) can jump it far down the flight in
+	// one frame - safe to call anytime since it's just RecycleSteps()'s own distance check.
+	void SnapStepsToSlinky() { RecycleSteps(); }
+
 	// The world location of the top surface of the tread nearest WorldX - used by
 	// ASlinkyActor::ResetSlinky() so restarting the coil reforms wherever it currently is on the
 	// stairs, the same "anchor on the step below the slinky" idea as the setters above, rather than

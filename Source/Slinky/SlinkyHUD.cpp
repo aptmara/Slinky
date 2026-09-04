@@ -1,5 +1,6 @@
 #include "SlinkyHUD.h"
 #include "SlinkyActor.h"
+#include "SlinkyGameInstance.h"
 #include "SlinkyGameMode.h"
 #include "SlinkyStaircase.h"
 #include "Engine/Canvas.h"
@@ -16,6 +17,18 @@ namespace
 	// bakes noticeably larger glyphs than the engine's tiny debug font, so every former "small font"
 	// line needs shrinking down to roughly its old on-screen size.
 	constexpr float SmallFontScale = 0.5f;
+
+	// YuseiMagic-Regular_Font is a Runtime (Slate/CompositeFont) font, so Canvas::DrawText's
+	// XScale/YScale multiplier isn't re-rendering a vector outline at each call - it's stretching an
+	// already-rasterized glyph bitmap cached at the font's LegacyFontSize. That size shipped as the
+	// engine default of 9pt, so every Scale value in this file (tuned up to ~5x for the combo number,
+	// and further overshooting past that on a spring "pop" - see ASlinkyActor::GetComboPopScale) was
+	// blowing a 9pt glyph up many times past its source resolution, reading as blurry/smeared right
+	// when the number popped biggest. 96pt wasn't enough headroom for that overshoot; the asset's
+	// LegacyFontSize was bumped to 512pt in-editor instead, comfortably covering even the biggest
+	// combo-scaled + overshot number, so every Scale here now needs the same correction (old/new) to
+	// land on the same on-screen size it was actually tuned against.
+	constexpr float LegacyFontSizeCorrection = 9.0f / 512.0f;
 }
 
 ASlinkyHUD::ASlinkyHUD()
@@ -49,16 +62,39 @@ void ASlinkyHUD::DrawHUD()
 	// next to a comic-book combo counter.
 	UFont* const DisplayFont = ComboFont ? ComboFont.Get() : GEngine->GetLargeFont();
 	UFont* const SmallDisplayFont = ComboFont ? ComboFont.Get() : GEngine->GetSmallFont();
-	const float SmallScale = ComboFont ? SmallFontScale : 1.0f;
+	// Only ComboFont needs the LegacyFontSize correction - GEngine's built-in fonts are unaffected,
+	// so this is 1 whenever ComboFont failed to load and DisplayFont/SmallDisplayFont fell back to them.
+	const float FontCorrection = ComboFont ? LegacyFontSizeCorrection : 1.0f;
+	const float SmallScale = (ComboFont ? SmallFontScale : 1.0f) * FontCorrection;
 
 	// Bounces above 1x on every landed step and springs back down (see ASlinkyActor::RegisterCombo/
 	// SpringToward) instead of drawing at a flat scale, so each step reads as a little "pop".
-	const float StepScale = Slinky->GetStepPopScale();
+	const float StepScale = Slinky->GetStepPopScale() * FontCorrection;
 	const FText CountText = FText::FromString(FString::Printf(TEXT("%d steps"), Slinky->GetStepCount()));
 	Canvas->SetDrawColor(FColor(232, 235, 238));
 	Canvas->DrawText(DisplayFont, CountText, 44.0f, 38.0f, StepScale, StepScale);
 
-	DrawComboBanner(Slinky);
+	// Current fall depth, in the same "meters below the top step" convention as the title screen's
+	// saved-record readout and ASlinkyGameMode::GetCurrentDepthMeters() - so continuing later can
+	// promise "starts from that depth" and mean something the player already saw on screen here.
+	// Bottom-left and large - a constant, easy-to-glance-at readout rather than a small debug line.
+	if (const ASlinkyGameMode* GameMode = Cast<ASlinkyGameMode>(GetWorld()->GetAuthGameMode()))
+	{
+		constexpr float Margin = 44.0f;
+		const float DepthScale = 5.5f * FontCorrection;
+		const FString DepthString = FString::Printf(TEXT("%.0fm"), GameMode->GetCurrentDepthMeters());
+		float TextWidth = 0.0f, TextHeight = 0.0f;
+		Canvas->TextSize(DisplayFont, DepthString, TextWidth, TextHeight, DepthScale, DepthScale);
+		Canvas->SetDrawColor(FColor(232, 235, 238));
+		Canvas->DrawText(DisplayFont, FText::FromString(DepthString), Margin,
+			static_cast<float>(Canvas->SizeY) - Margin - TextHeight, DepthScale, DepthScale);
+	}
+
+	const USlinkyGameInstance* GameInstance = GetWorld() ? Cast<USlinkyGameInstance>(GetWorld()->GetGameInstance()) : nullptr;
+	if (!GameInstance || GameInstance->IsComboDisplayEnabled())
+	{
+		DrawComboBanner(Slinky);
+	}
 
 	Canvas->SetDrawColor(FColor(182, 188, 194));
 	Canvas->DrawText(SmallDisplayFont, FText::FromString(
@@ -125,43 +161,29 @@ void ASlinkyHUD::DrawComboBanner(const ASlinkyActor* Slinky)
 		const FLinearColor ComboColorLinear = Slinky->GetComboColor();
 		const int32 ComboCount = Slinky->GetComboCount();
 
-		// Grows with the streak itself (capped) instead of a single flat size, so a long combo keeps
-		// visibly getting bolder rather than sitting as a small, easy-to-miss readout. No background
-		// dressing at all here - every bit of "excitement" has to come from the letters themselves.
-		const float GrowthScale = 1.0f + FMath::Min(ComboCount * 0.035f, 1.6f);
-		// PopScale already overshoots past 1 on every landing (see ASlinkyActor::SpringToward) - not
-		// clamped down here, so that overshoot reads as a real "thump" on the number instead of being
-		// smoothed away.
-		const float PopScale = Slinky->GetComboPopScale();
-		// The label ("COMBO"/"NICE COMBO"/...) stays a supporting element; the number is the star of
-		// the show - a huge "hit counter" look instead of one evenly-sized line of text.
-		const float LabelScale = 1.6f * GrowthScale;
-		const float NumberScale = FMath::Max(PopScale, 0.1f) * 5.5f * GrowthScale;
-
-		const float LabelY = ScreenH * 0.24f;
-		const FVector2D LabelSize = DrawWobblyText(Slinky->GetComboLabel(), CenterX, LabelY, LabelScale,
-			ComboColorLinear, 3.0f, 0.0f, false);
-
-		// The number itself: bold white fill with a thick outline in the combo's own color, so it
-		// reads as a distinct "hit marker" popping out in front of the label rather than more of the
-		// same text at a bigger size.
-		const float NumberY = LabelY + LabelSize.Y * 0.5f + 26.0f;
-		const FString NumberText = FString::Printf(TEXT("x%d"), ComboCount);
-		const FVector2D NumberSize = DrawWobblyText(NumberText, CenterX, NumberY, NumberScale,
-			FLinearColor(1.0f, 1.0f, 1.0f, 1.0f), 4.0f, 0.9f, false, ComboColorLinear);
-
-		// Empties out left-to-right as ComboTimeRemaining runs down, giving a visible countdown to
-		// when the streak will drop instead of it just vanishing without warning. The only non-text
-		// element left, kept small and purely functional rather than decorative.
-		const float GaugeWidth = FMath::Min(220.0f * GrowthScale, ScreenW * 0.5f);
-		constexpr float GaugeHeight = 8.0f;
-		const float GaugeX = CenterX - GaugeWidth * 0.5f;
-		const float GaugeY = NumberY + NumberSize.Y * 0.5f + 20.0f;
-		DrawRect(FLinearColor(0.05f, 0.05f, 0.07f, 0.6f), GaugeX, GaugeY, GaugeWidth, GaugeHeight);
-		const float Fill = Slinky->GetComboWindowRemaining01();
-		if (Fill > 0.0f)
+		// The only combo UI: a huge, screen-center "hit pop" of just the number on every landed
+		// step, gone in well under a second (see ASlinkyActor::GetComboPopupAlpha01()) instead of
+		// sitting on screen and blocking the view between landings. No permanent corner readout -
+		// that read as leftover/duplicate UI sitting on screen the whole time the combo lasted.
+		const float PopupAlpha = Slinky->GetComboPopupAlpha01();
+		if (PopupAlpha > 0.0f)
 		{
-			DrawRect(ComboColorLinear, GaugeX, GaugeY, GaugeWidth * Fill, GaugeHeight);
+			const float PopupGrowth = 1.0f + FMath::Min(ComboCount * 0.035f, 1.6f);
+			// PopScale already overshoots past 1 on every landing (see ASlinkyActor::SpringToward) -
+			// not clamped down here, so that overshoot reads as a real "thump" on the number.
+			const float NumberScale = FMath::Max(Slinky->GetComboPopScale(), 0.1f) * 5.2f * PopupGrowth;
+
+			// Stay fully opaque for most of the pop's life and shrink sharply away only right at the
+			// very end, instead of fading the alpha down the whole time - a translucent glyph reads
+			// as "smeared" rather than a clean, crisp pop that's simply shrinking out of view.
+			constexpr float ShrinkStartAlpha = 0.4f;
+			const float ShrinkFactor = (PopupAlpha < ShrinkStartAlpha)
+				? FMath::Square(PopupAlpha / ShrinkStartAlpha)
+				: 1.0f;
+
+			const FString NumberText = FString::Printf(TEXT("x%d"), ComboCount);
+			DrawWobblyText(NumberText, CenterX, ScreenH * 0.3f, NumberScale * ShrinkFactor, ComboColorLinear,
+				3.0f, 0.9f, false);
 		}
 	}
 
@@ -172,24 +194,28 @@ void ASlinkyHUD::DrawComboBanner(const ASlinkyActor* Slinky)
 		const FLinearColor ComboColorLinear = Slinky->GetComboColor();
 		const float Shake = Slinky->GetMilestoneShake();
 
-		// Huge and briefly dominant on its own merits (size, overshoot, rainbow, shadow) - no dark
-		// backing band or radiating lines needed to make it read as an event.
+		// Huge and briefly dominant on its own merits (size, overshoot, rainbow) - no dark backing
+		// band or radiating lines needed to make it read as an event.
 		const float MilestoneScale = (4.2f + 2.6f * MilestoneAlpha) * (1.0f + 0.35f * Shake);
 		const float BannerCenterY = ScreenH * 0.42f;
 
-		FLinearColor TextColor = ComboColorLinear;
-		TextColor.A = FMath::Clamp(MilestoneAlpha, 0.0f, 1.0f);
+		// Same "stay fully opaque, then shrink sharply away" logic as the combo number pop above -
+		// fading the alpha instead would read as smeared rather than a clean, crisp banner that's
+		// simply shrinking away.
+		constexpr float ShrinkStartAlpha = 0.4f;
+		const float ShrinkFactor = (MilestoneAlpha < ShrinkStartAlpha)
+			? FMath::Square(MilestoneAlpha / ShrinkStartAlpha)
+			: 1.0f;
 
 		// Rainbow cycling only for the milestone banner - the everyday combo counter stays one solid
 		// color so the rare, extra-loud rainbow treatment keeps reading as special.
-		DrawWobblyText(Milestone, CenterX, BannerCenterY, MilestoneScale, TextColor,
-			10.0f + Shake * 14.0f, 1.7f, true, FLinearColor(0.02f, 0.02f, 0.03f, TextColor.A));
+		DrawWobblyText(Milestone, CenterX, BannerCenterY, MilestoneScale * ShrinkFactor, ComboColorLinear,
+			10.0f + Shake * 14.0f, 1.7f, true);
 	}
 }
 
 FVector2D ASlinkyHUD::DrawWobblyText(const FString& Text, float CenterX, float Y, float Scale,
-	const FLinearColor& Color, float WobbleAmount, float WobblePhase, bool bRainbow,
-	const FLinearColor& OutlineColor) const
+	const FLinearColor& Color, float WobbleAmount, float WobblePhase, bool bRainbow) const
 {
 	if (Text.IsEmpty() || !Canvas || !GEngine)
 	{
@@ -198,6 +224,21 @@ FVector2D ASlinkyHUD::DrawWobblyText(const FString& Text, float CenterX, float Y
 
 	UFont* const Font = ComboFont ? ComboFont.Get() : GEngine->GetLargeFont();
 	const double Time = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+
+	// DrawScale is what actually goes to Canvas->TextSize/DrawText; Scale itself keeps meaning "how
+	// big this reads on screen" (MaxWidth's fit-factor math below was tuned against that meaning) and
+	// gets corrected into DrawScale here so ComboFont's bumped LegacyFontSize (see
+	// LegacyFontSizeCorrection) doesn't also blow up the actual on-screen size. GEngine's built-in
+	// fonts need no correction.
+	const float FontCorrection = ComboFont ? LegacyFontSizeCorrection : 1.0f;
+	float DrawScale = Scale * FontCorrection;
+	if (ComboFont)
+	{
+		// Never ask Canvas to stretch the cached glyph bitmap past its own source resolution (1x) -
+		// always a straight blit or a downscale, never an upscale - so even an unexpectedly large
+		// Scale value can't reintroduce the blur/smear LegacyFontSizeCorrection exists to prevent.
+		DrawScale = FMath::Min(DrawScale, 1.0f);
+	}
 
 	// Measured glyph-by-glyph (rather than assuming a monospace font) so letters sit flush against
 	// each other despite each being drawn as its own DrawText call.
@@ -208,7 +249,7 @@ FVector2D ASlinkyHUD::DrawWobblyText(const FString& Text, float CenterX, float Y
 	for (int32 Index = 0; Index < Text.Len(); ++Index)
 	{
 		float GlyphWidth, GlyphHeight;
-		Canvas->TextSize(Font, Text.Mid(Index, 1), GlyphWidth, GlyphHeight, Scale, Scale);
+		Canvas->TextSize(Font, Text.Mid(Index, 1), GlyphWidth, GlyphHeight, DrawScale, DrawScale);
 		GlyphWidths.Add(GlyphWidth);
 		TotalWidth += GlyphWidth;
 		TextHeight = FMath::Max(TextHeight, GlyphHeight);
@@ -216,44 +257,31 @@ FVector2D ASlinkyHUD::DrawWobblyText(const FString& Text, float CenterX, float Y
 
 	// The aggressive, combo-count-scaled sizes above can otherwise run a long escalated label (e.g.
 	// "BONKERS COMBO x87") off both screen edges - shrink uniformly to fit and remeasure once at the
-	// corrected scale rather than guessing an exact fit factor up front.
+	// corrected scale rather than guessing an exact fit factor up front. Applied equally to both
+	// scales so Scale/DrawScale stay in the same ratio.
 	const float MaxWidth = static_cast<float>(Canvas->SizeX) * 0.94f;
 	if (TotalWidth > MaxWidth && TotalWidth > 0.0f)
 	{
 		const float FitFactor = MaxWidth / TotalWidth;
 		Scale *= FitFactor;
+		DrawScale *= FitFactor;
 		GlyphWidths.Reset();
 		TotalWidth = 0.0f;
 		TextHeight = 0.0f;
 		for (int32 Index = 0; Index < Text.Len(); ++Index)
 		{
 			float GlyphWidth, GlyphHeight;
-			Canvas->TextSize(Font, Text.Mid(Index, 1), GlyphWidth, GlyphHeight, Scale, Scale);
+			Canvas->TextSize(Font, Text.Mid(Index, 1), GlyphWidth, GlyphHeight, DrawScale, DrawScale);
 			GlyphWidths.Add(GlyphWidth);
 			TotalWidth += GlyphWidth;
 			TextHeight = FMath::Max(TextHeight, GlyphHeight);
 		}
 	}
 
-	// Drawing the glyph repeatedly in a ring around itself fakes a solid outline (Canvas text has no
-	// native stroke) - a cheap comic-book "inked" look that keeps text readable over the bright, busy
-	// stair backdrop. The ring's reach scales with glyph size so a huge combo number still reads with
-	// a bold, thick stroke instead of a hairline that gets proportionally thinner as text grows.
-	const float OutlineReach = FMath::Clamp(2.0f + Scale * 1.3f, 2.0f, 16.0f);
-	static const FVector2D UnitOffsets[] = {
-		{-1.0f, -1.0f}, {1.0f, -1.0f}, {-1.0f, 1.0f}, {1.0f, 1.0f},
-		{0.0f, -1.0f}, {0.0f, 1.0f}, {-1.0f, 0.0f}, {1.0f, 0.0f},
-		{-0.7f, -0.7f}, {0.7f, -0.7f}, {-0.7f, 0.7f}, {0.7f, 0.7f},
-	};
-	FColor OutlineFColor = OutlineColor.ToFColor(true);
-	OutlineFColor.A = static_cast<uint8>(FMath::Clamp(Color.A, 0.0f, 1.0f) * 255.0f);
-
-	// A single hard drop shadow, offset down-right and scaled with the glyph, so the text reads as
-	// "popping off the screen" on its own - no background art needed to sell the depth.
-	const float ShadowOffset = FMath::Clamp(Scale * 0.9f, 3.0f, 22.0f);
-	FColor ShadowFColor(4, 3, 6);
-	ShadowFColor.A = static_cast<uint8>(FMath::Clamp(Color.A, 0.0f, 1.0f) * 200.0f);
-
+	// One DrawText call per glyph, nothing layered underneath - no outline ring or drop shadow copies.
+	// Those extra passes read as noise (and are what broke down into smeared/overlapping glyphs) when
+	// LegacyFontSizeCorrection pushes DrawScale down to keep a large-LegacyFontSize font at its
+	// intended on-screen size, so a single crisp draw is both simpler and more robust.
 	float PenX = CenterX - TotalWidth * 0.5f;
 	for (int32 Index = 0; Index < Text.Len(); ++Index)
 	{
@@ -265,16 +293,6 @@ FVector2D ASlinkyHUD::DrawWobblyText(const FString& Text, float CenterX, float Y
 
 		if (!Glyph.Equals(TEXT(" ")))
 		{
-			Canvas->SetDrawColor(ShadowFColor);
-			Canvas->DrawText(Font, Glyph, PenX + ShadowOffset, GlyphY + ShadowOffset, Scale, Scale);
-
-			Canvas->SetDrawColor(OutlineFColor);
-			for (const FVector2D& Unit : UnitOffsets)
-			{
-				Canvas->DrawText(Font, Glyph, PenX + Unit.X * OutlineReach, GlyphY + Unit.Y * OutlineReach,
-					Scale, Scale);
-			}
-
 			FLinearColor GlyphColor = Color;
 			if (bRainbow)
 			{
@@ -283,7 +301,7 @@ FVector2D ASlinkyHUD::DrawWobblyText(const FString& Text, float CenterX, float Y
 				GlyphColor.A = Color.A;
 			}
 			Canvas->SetDrawColor(GlyphColor.ToFColor(true));
-			Canvas->DrawText(Font, Glyph, PenX, GlyphY, Scale, Scale);
+			Canvas->DrawText(Font, Glyph, PenX, GlyphY, DrawScale, DrawScale);
 		}
 
 		PenX += GlyphWidths[Index];

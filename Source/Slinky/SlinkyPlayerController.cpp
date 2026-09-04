@@ -1,6 +1,7 @@
 #include "SlinkyPlayerController.h"
 #include "SlinkyActor.h"
 #include "SlinkyControlPanel.h"
+#include "SlinkyPauseMenu.h"
 #include "SlinkyStaircase.h"
 #include "Camera/CameraActor.h"
 #include "EngineUtils.h"
@@ -30,6 +31,21 @@ void ASlinkyPlayerController::BeginPlay()
 	{
 		ControlPanel->AddToViewport();
 	}
+
+	PauseMenu = CreateWidget<USlinkyPauseMenu>(this, USlinkyPauseMenu::StaticClass());
+	if (PauseMenu)
+	{
+		// Above ControlPanel (default Z-order 0) so the paused overlay isn't hidden behind it.
+		PauseMenu->AddToViewport(10);
+	}
+}
+
+void ASlinkyPlayerController::RefreshControlPanelFromLiveValues()
+{
+	if (ControlPanel && Staircase && Slinky)
+	{
+		ControlPanel->SetTargets(Staircase, Slinky);
+	}
 }
 
 void ASlinkyPlayerController::SetupInputComponent()
@@ -52,6 +68,8 @@ void ASlinkyPlayerController::SetupInputComponent()
 	InputComponent->BindKey(EKeys::Tab, IE_Pressed, this, &ASlinkyPlayerController::CycleCoilTuningParam);
 	InputComponent->BindKey(EKeys::LeftBracket, IE_Pressed, this, &ASlinkyPlayerController::DecreaseCoilTuningParam);
 	InputComponent->BindKey(EKeys::RightBracket, IE_Pressed, this, &ASlinkyPlayerController::IncreaseCoilTuningParam);
+
+	InputComponent->BindKey(EKeys::Escape, IE_Pressed, this, &ASlinkyPlayerController::TogglePauseMenu);
 }
 
 void ASlinkyPlayerController::PlayerTick(float DeltaTime)
@@ -188,6 +206,14 @@ void ASlinkyPlayerController::DecreaseCoilTuningParam()
 	if (Slinky)
 	{
 		Slinky->AdjustTuningParam(-1.0f);
+	}
+}
+
+void ASlinkyPlayerController::TogglePauseMenu()
+{
+	if (PauseMenu)
+	{
+		PauseMenu->TogglePause();
 	}
 }
 

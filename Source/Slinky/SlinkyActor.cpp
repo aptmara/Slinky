@@ -1,4 +1,5 @@
 #include "SlinkyActor.h"
+#include "SlinkyGameInstance.h"
 #include "SlinkyStaircase.h"
 #include "Camera/CameraActor.h"
 #include "Camera/CameraComponent.h"
@@ -92,15 +93,15 @@ ASlinkyActor::ASlinkyActor()
 	TetherSegments->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	TetherSegments->SetCastShadow(false);
 
-	StepRings = CreateDefaultSubobject<UInstancedStaticMeshComponent>(TEXT("StepRings"));
-	StepRings->SetupAttachment(SceneRoot);
-	StepRings->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-	StepRings->SetCastShadow(false);
-
 	StepSparkles = CreateDefaultSubobject<UInstancedStaticMeshComponent>(TEXT("StepSparkles"));
 	StepSparkles->SetupAttachment(SceneRoot);
 	StepSparkles->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	StepSparkles->SetCastShadow(false);
+
+	StepGlints = CreateDefaultSubobject<UInstancedStaticMeshComponent>(TEXT("StepGlints"));
+	StepGlints->SetupAttachment(SceneRoot);
+	StepGlints->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	StepGlints->SetCastShadow(false);
 
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> Cylinder(TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
 	if (Cylinder.Succeeded())
@@ -111,13 +112,18 @@ ASlinkyActor::ASlinkyActor()
 		}
 		HelixSegments->SetStaticMesh(Cylinder.Object);
 		TetherSegments->SetStaticMesh(Cylinder.Object);
-		StepRings->SetStaticMesh(Cylinder.Object);
 	}
 
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> Cube(TEXT("/Engine/BasicShapes/Cube.Cube"));
 	if (Cube.Succeeded())
 	{
 		StepSparkles->SetStaticMesh(Cube.Object);
+	}
+
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> Sphere(TEXT("/Engine/BasicShapes/Sphere.Sphere"));
+	if (Sphere.Succeeded())
+	{
+		StepGlints->SetStaticMesh(Sphere.Object);
 	}
 
 	static ConstructorHelpers::FObjectFinder<UMaterialInterface> BaseMaterial(
@@ -134,13 +140,15 @@ ASlinkyActor::ASlinkyActor()
 
 		// Recolored per-step to the current combo's hue in TriggerStepEffects() - the flat starting
 		// color here only matters before the first step ever lands.
-		RingMaterial = UMaterialInstanceDynamic::Create(BaseMaterial.Object, this);
-		RingMaterial->SetVectorParameterValue(TEXT("Color"), FLinearColor(1.0f, 0.85f, 0.25f, 1.0f));
-		StepRings->SetMaterial(0, RingMaterial);
-
 		SparkleMaterial = UMaterialInstanceDynamic::Create(BaseMaterial.Object, this);
 		SparkleMaterial->SetVectorParameterValue(TEXT("Color"), FLinearColor(1.0f, 0.85f, 0.25f, 1.0f));
 		StepSparkles->SetMaterial(0, SparkleMaterial);
+
+		// Bright, near-white/warm regardless of combo color - reads as a "glint/highlight" scattered
+		// among the combo-colored cubes rather than another cube-colored particle.
+		GlintMaterial = UMaterialInstanceDynamic::Create(BaseMaterial.Object, this);
+		GlintMaterial->SetVectorParameterValue(TEXT("Color"), FLinearColor(1.4f, 1.3f, 1.0f, 1.0f));
+		StepGlints->SetMaterial(0, GlintMaterial);
 	}
 
 	SlinkyPhysicalMaterial = CreateDefaultSubobject<UPhysicalMaterial>(TEXT("SlinkyPhysicalMaterial"));
@@ -222,7 +230,9 @@ void ASlinkyActor::Tick(float DeltaTime)
 	}
 	MilestoneTimer = FMath::Max(MilestoneTimer - DeltaTime, 0.0f);
 	MilestoneShake = FMath::Max(MilestoneShake - DeltaTime * 2.2f, 0.0f);
-	ComboFlashAlpha = FMath::Max(ComboFlashAlpha - DeltaTime * 2.6f, 0.0f);
+	// ~0.5s hold-and-fade for the screen-center hit pop - long enough to register, short enough to
+	// never linger over the gameplay view.
+	ComboPopupAlpha = FMath::Max(ComboPopupAlpha - DeltaTime * 2.0f, 0.0f);
 
 	SpringToward(StepPopScale, StepPopVelocity, 1.0f, 300.0f, 16.0f, DeltaTime);
 	SpringToward(ComboPopScale, ComboPopVelocity, 1.0f, 300.0f, 16.0f, DeltaTime);
@@ -281,23 +291,28 @@ void ASlinkyActor::ResetSlinky()
 	ComboTimeRemaining = 0.0f;
 	MilestoneTimer = 0.0f;
 	MilestoneShake = 0.0f;
-	ComboFlashAlpha = 0.0f;
+	ComboPopupAlpha = 0.0f;
 	CameraPunch = 0.0f;
 	CameraPunchVelocity = 0.0f;
-	ActiveRings.Reset();
 	ActiveSparkles.Reset();
-	StepRings->ClearInstances();
+	ActiveGlints.Reset();
 	StepSparkles->ClearInstances();
+	StepGlints->ClearInstances();
 
 	// Reform wherever the coil currently is on the stairs (the tread directly below its current
 	// center) rather than always snapping back to the actor's original placement - the same "anchor
 	// on the step below the slinky" idea ASlinkyStaircase's setters use for live parameter changes,
-	// so neither action can strand the coil far from where the player actually was. Falls back to
-	// the actor's own location if the staircase hasn't spawned yet (only true for BeginPlay's very
-	// first ResetSlinky() call, before ASlinkyGameMode has necessarily created it).
+	// so neither action can strand the coil far from where the player actually was.
+	SnapOntoStaircaseNear(GetCenterLocation().X);
+}
+
+void ASlinkyActor::SnapOntoStaircaseNear(float WorldX)
+{
+	// Falls back to the actor's own location if the staircase hasn't spawned yet (only true for
+	// BeginPlay's very first ResetSlinky() call, before ASlinkyGameMode has necessarily created it).
 	const ASlinkyStaircase* Staircase = FindStaircase();
 	const FVector Base = Staircase
-		? Staircase->GetTreadTopLocationNear(GetCenterLocation().X)
+		? Staircase->GetTreadTopLocationNear(WorldX)
 		: GetActorLocation();
 	for (int32 Index = 0; Index < PhysicsNodes.Num(); ++Index)
 	{
@@ -308,6 +323,30 @@ void ASlinkyActor::ResetSlinky()
 			ETeleportType::TeleportPhysics);
 		Node->SetPhysicsLinearVelocity(FVector::ZeroVector);
 		Node->SetPhysicsAngularVelocityInDegrees(FVector::ZeroVector);
+	}
+}
+
+void ASlinkyActor::TeleportToDepth(float DepthMeters)
+{
+	// Depth only tells us how far down (Z) to land; how far along (X) that corresponds to depends
+	// on the stairs' own tread/riser proportions, so it's derived from those rather than stored
+	// separately - matches GameMode's own DepthMeters = -Z/100 convention run in reverse.
+	const ASlinkyStaircase* Staircase = FindStaircase();
+	const float StepRatio = (Staircase && Staircase->StepRise > 0.0f)
+		? (Staircase->StepDepth / Staircase->StepRise)
+		: 1.0f;
+	const float TargetWorldX = FMath::Max(DepthMeters, 0.0f) * 100.0f * StepRatio;
+
+	SnapOntoStaircaseNear(TargetWorldX);
+
+	// Without this the camera would visibly swoop down from the origin over a couple of seconds
+	// (see UpdateCamera's VInterpTo) right as the level opens - it only lags ordinary gameplay
+	// movement, not a level-start teleport like this one.
+	if (FollowCameraActor)
+	{
+		SmoothedCameraLocation = GetCameraFocusLocation();
+		SmoothedCameraLocation.Y = -1000.0f;
+		FollowCameraActor->SetActorLocationAndRotation(SmoothedCameraLocation, FRotator(0.0f, 90.0f, 0.0f));
 	}
 }
 
@@ -831,8 +870,8 @@ bool ASlinkyActor::RegisterCombo()
 	ComboTimeRemaining = ComboWindowSeconds;
 	BestCombo = FMath::Max(BestCombo, ComboCount);
 
-	// Every landed step gets a quick full-screen color pulse, tier or not - see GetComboFlashAlpha().
-	ComboFlashAlpha = 1.0f;
+	// Every landed step gets a quick screen-center number pop, tier or not - see GetComboPopupAlpha01().
+	ComboPopupAlpha = 1.0f;
 
 	const int32 NewTier = ComboCount / ComboTierSize;
 	const bool bTierUp = NewTier > PreviousTier;
@@ -876,42 +915,59 @@ FString ASlinkyActor::GetComboLabel() const
 void ASlinkyActor::TriggerStepEffects(const FVector& ImpactLocation, bool bTierUp)
 {
 	const FLinearColor ComboColor = ComputeComboColor(ComboCount);
-	if (RingMaterial)
-	{
-		RingMaterial->SetVectorParameterValue(TEXT("Color"), ComboColor);
-	}
 	if (SparkleMaterial)
 	{
 		SparkleMaterial->SetVectorParameterValue(TEXT("Color"), ComboColor);
 	}
 
-	// A tier-up (every 10th combo) gets a second, larger ring a beat behind the first - reads as a
-	// double "thump" instead of a single pop, matching the bigger banner/shake it comes with.
-	const int32 RingCount = bTierUp ? 2 : 1;
-	for (int32 RingIndex = 0; RingIndex < RingCount; ++RingIndex)
-	{
-		FStepRingFx& Ring = ActiveRings.AddDefaulted_GetRef();
-		Ring.Location = ImpactLocation;
-		Ring.Age = -RingIndex * 0.08f;
-		Ring.Lifetime = bTierUp ? 0.6f : 0.42f;
-	}
+	// Pause menu's "エフェクト" toggle - only gates the particle bursts below, not the camera
+	// punch/pop-scale springs further down (those read as core feel rather than optional VFX).
+	const USlinkyGameInstance* GameInstance = GetWorld() ? Cast<USlinkyGameInstance>(GetWorld()->GetGameInstance()) : nullptr;
+	const bool bEffectsEnabled = !GameInstance || GameInstance->AreEffectsEnabled();
 
-	// Bigger bursts as the combo grows so a long streak visibly escalates, with an extra jolt right
-	// on a tier-up so the milestone reads as a proper "explosion" - capped so it never gets too heavy
-	// to update every frame.
-	const int32 SparkleCount = FMath::Clamp(6 + ComboCount / 2 + (bTierUp ? 16 : 0), 6, 34);
+	// Bigger, faster, longer-lived, more numerous bursts the higher ComboCount climbs (not just a
+	// flat tier-up bonus), so the payoff keeps escalating step by step right alongside the on-screen
+	// number instead of looking the same at combo 2 and combo 50. Clamped (ComboLavishness caps at
+	// 60) so it never gets too heavy to update every frame even on a very long streak.
+	const float ComboLavishness = FMath::Min(static_cast<float>(ComboCount), 60.0f);
+	const int32 SparkleCount = bEffectsEnabled
+		? FMath::Clamp(6 + FMath::RoundToInt(ComboLavishness * 0.9f) + (bTierUp ? 20 : 0), 6, 70)
+		: 0;
+	const float SparkleSpeedMax = FMath::Clamp(260.0f + ComboLavishness * 4.0f, 260.0f, 520.0f) + (bTierUp ? 120.0f : 0.0f);
+	const float SparkleLifetimeMax = FMath::Clamp(0.7f + ComboLavishness * 0.005f, 0.7f, 1.0f) + (bTierUp ? 0.25f : 0.0f);
+	const float SparkleScaleMax = FMath::Clamp(0.55f + ComboLavishness * 0.006f, 0.55f, 0.9f) + (bTierUp ? 0.2f : 0.0f);
 	for (int32 Index = 0; Index < SparkleCount; ++Index)
 	{
 		FStepSparkleFx& Sparkle = ActiveSparkles.AddDefaulted_GetRef();
 		const float Angle = FMath::FRandRange(0.0f, UE_TWO_PI);
-		const float Speed = FMath::FRandRange(120.0f, bTierUp ? 420.0f : 260.0f);
+		const float Speed = FMath::FRandRange(120.0f, SparkleSpeedMax);
 		Sparkle.Location = ImpactLocation;
 		Sparkle.Velocity = FVector(FMath::Cos(Angle) * Speed, 0.0f, FMath::Abs(FMath::Sin(Angle)) * Speed + 90.0f);
 		Sparkle.RotationAxis = FMath::VRand();
 		Sparkle.SpinDegreesPerSec = FMath::FRandRange(180.0f, 720.0f);
 		Sparkle.Age = 0.0f;
-		Sparkle.Lifetime = FMath::FRandRange(0.4f, bTierUp ? 0.95f : 0.7f);
-		Sparkle.BaseScale = FMath::FRandRange(0.3f, bTierUp ? 0.85f : 0.55f);
+		Sparkle.Lifetime = FMath::FRandRange(0.4f, SparkleLifetimeMax);
+		Sparkle.BaseScale = FMath::FRandRange(0.3f, SparkleScaleMax);
+	}
+
+	// A second, bright-white burst layered on top of the combo-colored cubes once the combo is
+	// actually building (a lone combo-2 landing stays modest - GlintCount is 0 there) and growing
+	// quickly from there, showering the main burst with extra glint as the streak climbs. This is
+	// the main driver of "looks progressively more lavish": the cube burst above scales gently, but
+	// a long streak buries every landing in a cloud of these on top of it.
+	const int32 GlintCount = bEffectsEnabled ? FMath::Clamp(ComboCount - 1, 0, 45) + (bTierUp ? 25 : 0) : 0;
+	for (int32 Index = 0; Index < GlintCount; ++Index)
+	{
+		FStepSparkleFx& Glint = ActiveGlints.AddDefaulted_GetRef();
+		const float Angle = FMath::FRandRange(0.0f, UE_TWO_PI);
+		const float Speed = FMath::FRandRange(200.0f, 560.0f);
+		Glint.Location = ImpactLocation;
+		Glint.Velocity = FVector(FMath::Cos(Angle) * Speed, 0.0f, FMath::Abs(FMath::Sin(Angle)) * Speed + 150.0f);
+		Glint.RotationAxis = FMath::VRand();
+		Glint.SpinDegreesPerSec = FMath::FRandRange(360.0f, 900.0f);
+		Glint.Age = 0.0f;
+		Glint.Lifetime = FMath::FRandRange(0.3f, 0.6f);
+		Glint.BaseScale = FMath::FRandRange(0.1f, 0.22f);
 	}
 
 	// A quick zoom-in "impact" that grows slightly with combo count, with a much bigger kick on a
@@ -926,75 +982,49 @@ void ASlinkyActor::TriggerStepEffects(const FVector& ImpactLocation, bool bTierU
 
 void ASlinkyActor::UpdateStepEffects(float DeltaTime)
 {
-	for (int32 Index = ActiveRings.Num() - 1; Index >= 0; --Index)
-	{
-		ActiveRings[Index].Age += DeltaTime;
-		if (ActiveRings[Index].Age >= ActiveRings[Index].Lifetime)
-		{
-			ActiveRings.RemoveAt(Index);
-		}
-	}
-	while (StepRings->GetInstanceCount() < ActiveRings.Num())
-	{
-		StepRings->AddInstance(FTransform(FVector(0.001f)));
-	}
-	while (StepRings->GetInstanceCount() > ActiveRings.Num())
-	{
-		StepRings->RemoveInstance(StepRings->GetInstanceCount() - 1);
-	}
-	for (int32 Index = 0; Index < ActiveRings.Num(); ++Index)
-	{
-		const FStepRingFx& Ring = ActiveRings[Index];
-		const float Alpha = FMath::Clamp(Ring.Age / Ring.Lifetime, 0.0f, 1.0f);
-		// Ring expands fast then eases off (Pow < 1) while its thickness collapses to nothing, so it
-		// reads as an outward shockwave that thins out and vanishes rather than fading in place.
-		const float RadiusScale = FMath::Lerp(0.15f, 3.2f, FMath::Pow(Alpha, 0.6f));
-		const float ThicknessScale = FMath::Lerp(0.45f, 0.0f, Alpha);
-		const FTransform Transform(FRotator(90.0f, 0.0f, 0.0f), Ring.Location + FVector(0.0f, 0.0f, 2.0f),
-			FVector(RadiusScale, RadiusScale, ThicknessScale));
-		StepRings->UpdateInstanceTransform(Index, Transform, true, false, true);
-	}
-	if (ActiveRings.Num() > 0)
-	{
-		StepRings->UpdateBounds();
-		StepRings->MarkRenderTransformDirty();
-		StepRings->MarkRenderStateDirty();
-	}
+	UpdateSparklePool(ActiveSparkles, StepSparkles, DeltaTime, 0.12f);
+	// Glints are tiny by design (see TriggerStepEffects()'s narrow BaseScale range) - the same 0.12
+	// mesh-to-world factor as the sparkle cubes, just starting from a much smaller BaseScale.
+	UpdateSparklePool(ActiveGlints, StepGlints, DeltaTime, 0.12f);
+}
 
-	for (int32 Index = ActiveSparkles.Num() - 1; Index >= 0; --Index)
+void ASlinkyActor::UpdateSparklePool(TArray<FStepSparkleFx>& Pool, UInstancedStaticMeshComponent* Component,
+	float DeltaTime, float ScaleMultiplier)
+{
+	for (int32 Index = Pool.Num() - 1; Index >= 0; --Index)
 	{
-		FStepSparkleFx& Sparkle = ActiveSparkles[Index];
+		FStepSparkleFx& Sparkle = Pool[Index];
 		Sparkle.Age += DeltaTime;
 		if (Sparkle.Age >= Sparkle.Lifetime)
 		{
-			ActiveSparkles.RemoveAt(Index);
+			Pool.RemoveAt(Index);
 			continue;
 		}
 		Sparkle.Velocity.Z -= 420.0f * DeltaTime;
 		Sparkle.Location += Sparkle.Velocity * DeltaTime;
 	}
-	while (StepSparkles->GetInstanceCount() < ActiveSparkles.Num())
+	while (Component->GetInstanceCount() < Pool.Num())
 	{
-		StepSparkles->AddInstance(FTransform(FVector(0.001f)));
+		Component->AddInstance(FTransform(FVector(0.001f)));
 	}
-	while (StepSparkles->GetInstanceCount() > ActiveSparkles.Num())
+	while (Component->GetInstanceCount() > Pool.Num())
 	{
-		StepSparkles->RemoveInstance(StepSparkles->GetInstanceCount() - 1);
+		Component->RemoveInstance(Component->GetInstanceCount() - 1);
 	}
-	for (int32 Index = 0; Index < ActiveSparkles.Num(); ++Index)
+	for (int32 Index = 0; Index < Pool.Num(); ++Index)
 	{
-		const FStepSparkleFx& Sparkle = ActiveSparkles[Index];
+		const FStepSparkleFx& Sparkle = Pool[Index];
 		const float Alpha = FMath::Clamp(Sparkle.Age / Sparkle.Lifetime, 0.0f, 1.0f);
-		const float Scale = Sparkle.BaseScale * FMath::Lerp(1.0f, 0.0f, FMath::Pow(Alpha, 1.5f)) * 0.12f;
+		const float Scale = Sparkle.BaseScale * FMath::Lerp(1.0f, 0.0f, FMath::Pow(Alpha, 1.5f)) * ScaleMultiplier;
 		const FQuat Rotation(Sparkle.RotationAxis, FMath::DegreesToRadians(Sparkle.SpinDegreesPerSec * Sparkle.Age));
 		const FTransform Transform(Rotation, Sparkle.Location, FVector(Scale));
-		StepSparkles->UpdateInstanceTransform(Index, Transform, true, false, true);
+		Component->UpdateInstanceTransform(Index, Transform, true, false, true);
 	}
-	if (ActiveSparkles.Num() > 0)
+	if (Pool.Num() > 0)
 	{
-		StepSparkles->UpdateBounds();
-		StepSparkles->MarkRenderTransformDirty();
-		StepSparkles->MarkRenderStateDirty();
+		Component->UpdateBounds();
+		Component->MarkRenderTransformDirty();
+		Component->MarkRenderStateDirty();
 	}
 }
 
@@ -1079,6 +1109,26 @@ void ASlinkyActor::AdjustTuningParam(float Direction)
 	default:
 		break;
 	}
+}
+
+void ASlinkyActor::ResetTuningToDefaults()
+{
+	const ASlinkyActor* Defaults = GetClass()->GetDefaultObject<ASlinkyActor>();
+	CompactLength = Defaults->CompactLength;
+	MaximumNodeSpacing = Defaults->MaximumNodeSpacing;
+	WireRadius = Defaults->WireRadius;
+	AxialStiffnessScale = Defaults->AxialStiffnessScale;
+	BendStiffnessScale = Defaults->BendStiffnessScale;
+	DampingScale = Defaults->DampingScale;
+	Restitution = Defaults->Restitution;
+	Friction = Defaults->Friction;
+	CoilTurns = Defaults->CoilTurns;
+	CoilRadius = Defaults->CoilRadius;
+
+	RefreshCompactLength();
+	RefreshCoilTuning();
+	RefreshNodeScale();
+	RebuildHelixSegments();
 }
 
 FString ASlinkyActor::GetTuningParamDisplay() const

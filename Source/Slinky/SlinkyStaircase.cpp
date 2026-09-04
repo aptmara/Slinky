@@ -85,6 +85,14 @@ void ASlinkyStaircase::SetRiserThickness(float NewValue)
 	RefreshLayout();
 }
 
+void ASlinkyStaircase::ResetToDefaults()
+{
+	const ASlinkyStaircase* Defaults = GetClass()->GetDefaultObject<ASlinkyStaircase>();
+	SetStepDepth(Defaults->StepDepth);
+	SetStepRise(Defaults->StepRise);
+	SetRiserThickness(Defaults->RiserThickness);
+}
+
 void ASlinkyStaircase::CaptureAnchor()
 {
 	const ASlinkyActor* Slinky = FindSlinky();

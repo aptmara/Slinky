@@ -53,13 +53,33 @@ private:
 	void UpdateCosmicView(float DepthMeters);
 
 	// A plain block of geometry with one flat-shaded material - the one primitive every entrance
-	// piece (wall segment or window frame bar) below is built from.
-	void SpawnBlock(const FVector& Center, const FVector& Size, const TCHAR* MaterialPath);
+	// piece (wall segment or window frame bar) below is built from. Returns the spawned actor so
+	// callers that need to track/recycle their blocks (see SpawnWindowFrame) can keep it.
+	AStaticMeshActor* SpawnBlock(const FVector& Center, const FVector& Size, const TCHAR* MaterialPath);
 
 	// Builds the entryway the coil starts inside: a white plaster wall (built as four segments
 	// around a rectangular gap, since there's no boolean-subtract at runtime) with a wood-framed,
 	// four-pane window in that gap.
 	void SpawnEntranceRoom();
+
+	// M_RoomBackdrop's shader (see its Custom "RoomSplit" node) cuts a see-through window every
+	// StepsPerWindow steps along the wall band, entirely on its own - these are never the reason a
+	// window exists. What this adds is 3D wood trim on top of some of those same holes, so a few
+	// read as an actual built window instead of a flat painted opening; the hole underneath (and
+	// so the CosmicBackdrop glimpsed through it) is identical either way.
+	//
+	// Recycled the same way ASlinkyStaircase recycles treads: called once a tick with the camera's
+	// current world position, it spawns frames for newly-visible window columns and destroys ones
+	// that scrolled out of range, keyed by their column index so a given position in the world
+	// keeps making the same choice (framed or not) no matter which direction the camera crosses it
+	// from.
+	void UpdateWindowFrames(const FVector& CameraLocation);
+	// Deterministic per-column choice (not FMath::Rand) - see UpdateWindowFrames().
+	static bool ShouldColumnHaveWindowFrame(int32 WindowCol);
+	// Spawns the wood casing + muntin blocks for one window column, computing that column's
+	// world-space center from the *same* StepDepth/StepRise/Anchor/BoundaryMargin formula as
+	// M_RoomBackdrop's shader, so the trim lands exactly on that shader's own cutout.
+	void SpawnWindowFrame(int32 WindowCol, TArray<AStaticMeshActor*>& OutBlocks);
 
 	UPROPERTY()
 	TObjectPtr<ASlinkyActor> Slinky;
@@ -96,4 +116,11 @@ private:
 	static constexpr float BackdropHeight = 1200.0f;
 
 	float CurrentDepthMeters = 0.0f;
+
+	// Window-column index -> the (up to 6) wood trim blocks spawned for it. Not a UPROPERTY - UHT
+	// doesn't support a TArray-valued TMap - but every actor in it is already kept alive by simply
+	// being a live actor in the level (the same reason StartPlay's Sun/Sky/Fog spawns above never
+	// bother storing a pointer either); UpdateWindowFrames() is solely responsible for Destroy()ing
+	// them once their column scrolls out of range.
+	TMap<int32, TArray<AStaticMeshActor*>> WindowFrameBlocksByColumn;
 };
