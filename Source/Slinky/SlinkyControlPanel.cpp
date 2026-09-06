@@ -17,17 +17,21 @@
 #include "Components/VerticalBox.h"
 #include "Components/VerticalBoxSlot.h"
 
+// Names here are prefixed (Panel*) because a packaged (non-editor) build's Unity build merges
+// several widget .cpp files - each with their own similarly-named anonymous-namespace helpers -
+// into one translation unit, where an unqualified "Shade"/"ButtonRadius" in more than one of them
+// is a redefinition error rather than the per-file-scoped name it is in a normal (non-unity) build.
 namespace
 {
-	constexpr float CardRadius = 12.0f;
-	constexpr float ButtonRadius = 9.0f;
+	constexpr float PanelCardRadius = 12.0f;
+	constexpr float PanelButtonRadius = 9.0f;
 	// Both columns are forced to this same width (via a SizeBox each), so the two header buttons
 	// line up as a matched pair even collapsed, when there are no rows to determine a natural
 	// width - and wide enough for the widest label ("軸方向の硬さ" / "摩擦係数") without wrapping.
 	constexpr float ColumnWidth = 250.0f;
 
 	// A darker, slightly desaturated shade of Color for the drop-shadow layer under a card/button.
-	FLinearColor Shade(const FLinearColor& Color)
+	FLinearColor PanelShade(const FLinearColor& Color)
 	{
 		return FLinearColor(Color.R * 0.55f, Color.G * 0.48f, Color.B * 0.58f, 1.0f);
 	}
@@ -170,6 +174,7 @@ void USlinkyControlPanel::NativeOnInitialized()
 	AddRow(SlinkyRowsBox, EParam::AxialStiffness, TEXT("軸方向の硬さ"), 0.1f,  3.0f,   0.1f,   1.0f,    TEXT("x"),  NextColor());
 	AddRow(SlinkyRowsBox, EParam::BendStiffness,  TEXT("曲げの硬さ"),   0.1f,  3.0f,   0.1f,   1.0f,    TEXT("x"),  NextColor());
 	AddRow(SlinkyRowsBox, EParam::Damping,        TEXT("減衰"),         0.1f,  3.0f,   0.1f,   1.0f,    TEXT("x"),  NextColor());
+	AddMaterialStyleButton(SlinkyRowsBox);
 	SlinkyRowsBox->SetVisibility(ESlateVisibility::Collapsed);
 	SlinkyRowsAnim = NewObject<UPopAnimator>(this);
 	SlinkyRowsAnim->Bind(SlinkyRowsBox, 0.0f);
@@ -185,7 +190,7 @@ UBorder* USlinkyControlPanel::AddShadowCard(UPanelWidget* Parent, FLinearColor F
 	UOverlay* Card = WidgetTree->ConstructWidget<UOverlay>(UOverlay::StaticClass());
 
 	UBorder* ShadowLayer = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass());
-	ShadowLayer->SetBrush(FSlateRoundedBoxBrush(Shade(FillColor), Radius));
+	ShadowLayer->SetBrush(FSlateRoundedBoxBrush(PanelShade(FillColor), Radius));
 	if (UOverlaySlot* ShadowSlot = Card->AddChildToOverlay(ShadowLayer))
 	{
 		ShadowSlot->SetHorizontalAlignment(HAlign_Fill);
@@ -217,11 +222,11 @@ UBorder* USlinkyControlPanel::AddShadowCard(UPanelWidget* Parent, FLinearColor F
 
 UButton* USlinkyControlPanel::AddSectionHeader(UPanelWidget* Parent, const FString& Text, FLinearColor Accent, TObjectPtr<UTextBlock>& OutHeaderText)
 {
-	const float Radius = CardRadius * 0.7f;
+	const float Radius = PanelCardRadius * 0.7f;
 
 	UOverlay* Card = WidgetTree->ConstructWidget<UOverlay>(UOverlay::StaticClass());
 	UBorder* Shadow = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass());
-	Shadow->SetBrush(FSlateRoundedBoxBrush(Shade(Accent), Radius));
+	Shadow->SetBrush(FSlateRoundedBoxBrush(PanelShade(Accent), Radius));
 	if (UOverlaySlot* S = Card->AddChildToOverlay(Shadow))
 	{
 		S->SetHorizontalAlignment(HAlign_Fill);
@@ -237,9 +242,11 @@ UButton* USlinkyControlPanel::AddSectionHeader(UPanelWidget* Parent, const FStri
 	Button->SetStyle(ButtonStyle);
 
 	UTextBlock* HeaderText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass());
-	// A closed-folder arrow to start, since every section's RowsBox starts Collapsed - ToggleSection
-	// flips it to an open-folder arrow whenever the section is actually expanded.
-	HeaderText->SetText(FText::FromString(FString::Printf(TEXT("\x25B8 %s"), *Text)));
+	// Plain arrows (U+2191/U+2193), not the geometric-shapes triangles (U+25B8/U+25BE) this used to
+	// use - those rendered as mojibake/missing-glyph boxes in a packaged build even though they
+	// looked fine in the editor, since the packaged font asset's glyph coverage didn't include
+	// them. Up = collapsed (RowsBox starts Collapsed) - ToggleSection flips it to down when expanded.
+	HeaderText->SetText(FText::FromString(FString::Printf(TEXT("\x2191 %s \x2191"), *Text)));
 	FSlateFontInfo Font = HeaderText->GetFont();
 	Font.Size = 15;
 	HeaderText->SetFont(Font);
@@ -284,7 +291,70 @@ void USlinkyControlPanel::ToggleSection(UVerticalBox* RowsBox, UPopAnimator* Row
 		// once the shrink has visibly finished, instead of the rows vanishing instantly.
 		RowsAnim->SetTarget(bWillBeVisible ? 1.0f : 0.0f, !bWillBeVisible);
 	}
-	HeaderText->SetText(FText::FromString(FString::Printf(TEXT("%s %s"), bWillBeVisible ? TEXT("\x25BE") : TEXT("\x25B8"), *Label)));
+	const TCHAR* Arrow = bWillBeVisible ? TEXT("\x2193") : TEXT("\x2191");
+	HeaderText->SetText(FText::FromString(FString::Printf(TEXT("%s %s %s"), Arrow, *Label, Arrow)));
+}
+
+UButton* USlinkyControlPanel::AddMaterialStyleButton(UPanelWidget* Parent)
+{
+	const float Radius = PanelCardRadius * 0.7f;
+	const FLinearColor Accent(0.88f, 0.82f, 0.60f);
+
+	UOverlay* Card = WidgetTree->ConstructWidget<UOverlay>(UOverlay::StaticClass());
+	UBorder* Shadow = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass());
+	Shadow->SetBrush(FSlateRoundedBoxBrush(PanelShade(Accent), Radius));
+	if (UOverlaySlot* S = Card->AddChildToOverlay(Shadow))
+	{
+		S->SetHorizontalAlignment(HAlign_Fill);
+		S->SetVerticalAlignment(VAlign_Fill);
+		S->SetPadding(FMargin(4.0f, 4.0f, 0.0f, 0.0f));
+	}
+
+	UButton* Button = WidgetTree->ConstructWidget<UButton>(UButton::StaticClass());
+	FButtonStyle ButtonStyle = Button->WidgetStyle;
+	ButtonStyle.Normal = FSlateRoundedBoxBrush(Accent, Radius);
+	ButtonStyle.Hovered = FSlateRoundedBoxBrush(Accent * 1.1f, Radius);
+	ButtonStyle.Pressed = FSlateRoundedBoxBrush(Accent * 0.85f, Radius);
+	Button->SetStyle(ButtonStyle);
+
+	MaterialStyleButtonText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass());
+	MaterialStyleButtonText->SetText(FText::FromString(TEXT("見た目: メタル")));
+	FSlateFontInfo Font = MaterialStyleButtonText->GetFont();
+	Font.Size = 14;
+	MaterialStyleButtonText->SetFont(Font);
+	MaterialStyleButtonText->SetColorAndOpacity(FSlateColor(FLinearColor(0.30f, 0.24f, 0.12f)));
+	MaterialStyleButtonText->SetJustification(ETextJustify::Center);
+	Button->SetContent(MaterialStyleButtonText);
+	if (UOverlaySlot* S = Card->AddChildToOverlay(Button))
+	{
+		S->SetHorizontalAlignment(HAlign_Fill);
+		S->SetVerticalAlignment(VAlign_Fill);
+		S->SetPadding(FMargin(0.0f, 0.0f, 4.0f, 4.0f));
+	}
+
+	if (UVerticalBoxSlot* CardSlot = Cast<UVerticalBoxSlot>(Parent->AddChild(Card)))
+	{
+		CardSlot->SetHorizontalAlignment(HAlign_Fill);
+		CardSlot->SetPadding(FMargin(0.0f, 6.0f, 0.0f, 0.0f));
+	}
+
+	AddButtonPop(Button);
+	Button->OnClicked.AddDynamic(this, &USlinkyControlPanel::OnMaterialStyleClicked);
+	return Button;
+}
+
+void USlinkyControlPanel::OnMaterialStyleClicked()
+{
+	if (!Slinky || !MaterialStyleButtonText)
+	{
+		return;
+	}
+
+	const bool bToPlastic = Slinky->GetCoilMaterialStyle() == ASlinkyActor::ECoilMaterialStyle::Metal;
+	Slinky->SetCoilMaterialStyle(bToPlastic
+		? ASlinkyActor::ECoilMaterialStyle::PlasticRainbow
+		: ASlinkyActor::ECoilMaterialStyle::Metal);
+	MaterialStyleButtonText->SetText(FText::FromString(bToPlastic ? TEXT("見た目: 虹色プラスチック") : TEXT("見た目: メタル")));
 }
 
 void USlinkyControlPanel::OnStairHeaderClicked()
@@ -310,7 +380,7 @@ void USlinkyControlPanel::AddRow(UPanelWidget* Parent, EParam Param, const FStri
 
 	const FLinearColor Ink(0.32f, 0.24f, 0.30f);
 
-	UBorder* Foreground = AddShadowCard(Parent, Accent, 6.0f, CardRadius);
+	UBorder* Foreground = AddShadowCard(Parent, Accent, 6.0f, PanelCardRadius);
 	Foreground->SetPadding(FMargin(16.0f, 10.0f));
 
 	UVerticalBox* RowBox = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass());
@@ -364,7 +434,7 @@ void USlinkyControlPanel::AddRow(UPanelWidget* Parent, EParam Param, const FStri
 	{
 		UOverlay* ButtonCard = WidgetTree->ConstructWidget<UOverlay>(UOverlay::StaticClass());
 		UBorder* BtnShadow = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass());
-		BtnShadow->SetBrush(FSlateRoundedBoxBrush(Shade(ButtonColor), ButtonRadius));
+		BtnShadow->SetBrush(FSlateRoundedBoxBrush(PanelShade(ButtonColor), PanelButtonRadius));
 		if (UOverlaySlot* S = ButtonCard->AddChildToOverlay(BtnShadow))
 		{
 			S->SetHorizontalAlignment(HAlign_Fill);
@@ -374,9 +444,9 @@ void USlinkyControlPanel::AddRow(UPanelWidget* Parent, EParam Param, const FStri
 
 		UButton* Button = WidgetTree->ConstructWidget<UButton>(UButton::StaticClass());
 		FButtonStyle ButtonStyle = Button->WidgetStyle;
-		ButtonStyle.Normal = FSlateRoundedBoxBrush(ButtonColor, ButtonRadius);
-		ButtonStyle.Hovered = FSlateRoundedBoxBrush(ButtonColor * 1.12f, ButtonRadius);
-		ButtonStyle.Pressed = FSlateRoundedBoxBrush(ButtonColor * 0.85f, ButtonRadius);
+		ButtonStyle.Normal = FSlateRoundedBoxBrush(ButtonColor, PanelButtonRadius);
+		ButtonStyle.Hovered = FSlateRoundedBoxBrush(ButtonColor * 1.12f, PanelButtonRadius);
+		ButtonStyle.Pressed = FSlateRoundedBoxBrush(ButtonColor * 0.85f, PanelButtonRadius);
 		Button->SetStyle(ButtonStyle);
 
 		UTextBlock* Glyph = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass());

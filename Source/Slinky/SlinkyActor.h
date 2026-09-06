@@ -25,7 +25,9 @@ public:
 	bool BeginDrag(const FVector& HitPoint);
 	void UpdateDragTarget(const FVector& Target);
 	void EndDrag();
-	void ResetSlinky();
+	// bPlaySfx is false only for BeginPlay's own bootstrap call - that reset isn't a player action
+	// and shouldn't announce itself with a clang, unlike R/"リスポーン" which are.
+	void ResetSlinky(bool bPlaySfx = true);
 
 	// Places the coil onto whatever tread is nearest the given depth (meters below the top step,
 	// same convention as ASlinkyGameMode::GetCurrentDepthMeters()) and snaps the camera straight
@@ -123,6 +125,22 @@ public:
 		CoilRadius,
 		Count
 	};
+
+	// Which look the coil's HelixSegments material is in - see SetCoilMaterialStyle. Metal is a
+	// plain gray metallic tint; PlasticRainbow blends in a per-segment hue cycle (see
+	// RebuildHelixSegments) instead, both via M_SlinkyCoil's "RainbowAmount" parameter.
+	enum class ECoilMaterialStyle : uint8
+	{
+		Metal,
+		PlasticRainbow
+	};
+
+	// Swaps HelixSegments' dynamic material parameters (Metallic/Roughness/RainbowAmount) for the
+	// new style and rebuilds the per-instance rainbow colors to match (a no-op array of zeros for
+	// Metal, since RainbowAmount=0 means the material never reads them) - see USlinkyControlPanel's
+	// 見た目 toggle button.
+	void SetCoilMaterialStyle(ECoilMaterialStyle NewStyle);
+	ECoilMaterialStyle GetCoilMaterialStyle() const { return CoilMaterialStyle; }
 
 	void CycleTuningParam();
 	void AdjustTuningParam(float Direction);
@@ -285,6 +303,7 @@ private:
 	int32 LastLastEndStepIndex = MIN_int32;
 	int32 SuccessfulContacts = 0;
 	ETuningParam SelectedTuningParam = ETuningParam::CompactLength;
+	ECoilMaterialStyle CoilMaterialStyle = ECoilMaterialStyle::Metal;
 	bool bResumePhysicsNextTick = false;
 
 	// One tumbling sparkle cube from a step-landing burst - see TriggerStepEffects()/

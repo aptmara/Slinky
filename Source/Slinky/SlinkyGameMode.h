@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/GameModeBase.h"
+#include "SlinkyChallengeTypes.h"
 #include "SlinkyGameMode.generated.h"
 
 class ASlinkyActor;
@@ -12,6 +13,7 @@ class AStaticMeshActor;
 class UExponentialHeightFogComponent;
 class ULightComponent;
 class UMaterialInstanceDynamic;
+class UMaterialInterface;
 
 UCLASS()
 class ASlinkyGameMode : public AGameModeBase
@@ -26,7 +28,28 @@ public:
 	// For SlinkyHUD's readout.
 	float GetCurrentDepthMeters() const { return CurrentDepthMeters; }
 
+	ESlinkyGameMode GetCurrentGameMode() const { return CurrentGameMode; }
+	const FSlinkyChallengeConfig& GetActiveChallengeConfig() const { return ActiveChallengeConfig; }
+
+	// FreePlay leaves the control panel and every keyboard tuning shortcut interactive; the other
+	// two modes apply a fixed config at StartPlay and lock every one of those entry points, since a
+	// leaderboard only means something if everyone on it played the same slinky - see
+	// ASlinkyPlayerController::IsCustomizationLocked and USlinkyPauseMenu::OnResetDefaultsClicked.
+	bool IsCustomizationLocked() const { return CurrentGameMode != ESlinkyGameMode::FreePlay; }
+
+	// Seconds left before a DailyChallenge/Ranked run auto-finishes (see Tick()/FinishChallengeRun)
+	// - 0 for FreePlay, which has no time limit. For SlinkyHUD's countdown readout.
+	float GetChallengeTimeRemaining() const { return ChallengeTimeRemaining; }
+
 private:
+	// Pushes every field of Config onto the just-spawned Staircase/Slinky, mirroring exactly what
+	// USlinkyControlPanel::ApplyValue does per-row - see StartPlay's DailyChallenge/Ranked branch.
+	void ApplyChallengeConfig(const FSlinkyChallengeConfig& Config);
+
+	// Records the run's result (StepCount as of right now) to the local leaderboard and returns to
+	// the title screen - called from Tick() the instant ChallengeTimeRemaining reaches 0, the
+	// DailyChallenge/Ranked equivalent of USlinkyPauseMenu::OnSaveAndQuitClicked's manual path.
+	void FinishChallengeRun();
 	// One stop on the CosmicBackdrop's color ramp - what is visible through the room's windows,
 	// independent of the room's own fixed indoor lighting. Depths are in meters below the top step;
 	// the ramp is walked in order and linearly interpolated between whichever two entries bracket
@@ -98,6 +121,18 @@ private:
 	UPROPERTY()
 	TObjectPtr<UMaterialInstanceDynamic> BackdropMaterial;
 
+	// Loaded once here via ConstructorHelpers (only valid inside a UObject's own constructor - see
+	// ASlinkyHUD::ComboFont for the same pattern), NOT via a runtime LoadObject() call in StartPlay
+	// as these used to be: a plain string-path LoadObject() is invisible to the cooker's static
+	// reference analysis, so a packaged build cooked without either material at all - the near/far
+	// backdrop cards silently had no material, meaning no visible background, no windows cut into
+	// the wall, and no wood-textured wall band, even though the actors themselves still spawned.
+	UPROPERTY()
+	TObjectPtr<UMaterialInterface> CosmicBackdropBaseMaterial;
+
+	UPROPERTY()
+	TObjectPtr<UMaterialInterface> RoomBackdropBaseMaterial;
+
 	// The far layer: the cosmic depth-zone sky (M_DepthBackdrop), only ever actually seen through
 	// the room's window openings.
 	UPROPERTY()
@@ -116,6 +151,26 @@ private:
 	static constexpr float BackdropHeight = 1200.0f;
 
 	float CurrentDepthMeters = 0.0f;
+
+	ESlinkyGameMode CurrentGameMode = ESlinkyGameMode::FreePlay;
+
+	// What ApplyChallengeConfig actually pushed for this run - default-constructed for FreePlay.
+	// Kept around so a Daily Challenge HUD readout (e.g. "本日のスリンキー: びよーんの日") can show it.
+	FSlinkyChallengeConfig ActiveChallengeConfig;
+
+	// DailyChallenge/Ranked runs are timed so every attempt is comparable on more than just skill
+	// at an otherwise-unbounded fall - FreePlay has no such limit. Counted down in Tick(); reaching
+	// 0 triggers FinishChallengeRun() exactly once (see bChallengeFinished).
+	static constexpr float ChallengeTimeLimitSeconds = 90.0f;
+	float ChallengeTimeRemaining = 0.0f;
+	bool bChallengeFinished = false;
+
+	// Whole seconds remaining last time ESlinkySfx::TimeWarning fired, so the countdown's last few
+	// seconds each get exactly one beep (on crossing the boundary) instead of one every Tick() -
+	// FMath::CeilToInt(ChallengeTimeRemaining) is monotonically decreasing, so a plain "did the
+	// integer change" check is enough without a separate timer. Reset to -1 whenever the timer
+	// itself is (re)armed in StartPlay, so a later run's countdown always starts fresh.
+	int32 LastTimeWarningSecond = -1;
 
 	// Window-column index -> the (up to 6) wood trim blocks spawned for it. Not a UPROPERTY - UHT
 	// doesn't support a TArray-valued TMap - but every actor in it is already kept alive by simply

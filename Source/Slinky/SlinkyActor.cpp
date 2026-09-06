@@ -126,14 +126,25 @@ ASlinkyActor::ASlinkyActor()
 		StepGlints->SetStaticMesh(Sphere.Object);
 	}
 
+	// The coil's own tube uses a dedicated material (Metallic/Roughness/RainbowAmount parameters -
+	// see SetCoilMaterialStyle) rather than the plain flat-color BasicShapeMaterial every other
+	// instanced mesh on this actor uses below.
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> CoilBaseMaterial(
+		TEXT("/Game/Slinky/M_SlinkyCoil.M_SlinkyCoil"));
+	if (CoilBaseMaterial.Succeeded())
+	{
+		UMaterialInstanceDynamic* SlinkyMaterial = UMaterialInstanceDynamic::Create(CoilBaseMaterial.Object, this);
+		SlinkyMaterial->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.72f, 0.76f, 0.82f, 1.0f));
+		SlinkyMaterial->SetScalarParameterValue(TEXT("Metallic"), 1.0f);
+		SlinkyMaterial->SetScalarParameterValue(TEXT("Roughness"), 0.2f);
+		SlinkyMaterial->SetScalarParameterValue(TEXT("RainbowAmount"), 0.0f);
+		HelixSegments->SetMaterial(0, SlinkyMaterial);
+	}
+
 	static ConstructorHelpers::FObjectFinder<UMaterialInterface> BaseMaterial(
 		TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
 	if (BaseMaterial.Succeeded())
 	{
-		UMaterialInstanceDynamic* SlinkyMaterial = UMaterialInstanceDynamic::Create(BaseMaterial.Object, this);
-		SlinkyMaterial->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.72f, 0.76f, 0.82f, 1.0f));
-		HelixSegments->SetMaterial(0, SlinkyMaterial);
-
 		UMaterialInstanceDynamic* TetherMaterial = UMaterialInstanceDynamic::Create(BaseMaterial.Object, this);
 		TetherMaterial->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.08f, 0.025f, 0.02f, 1.0f));
 		TetherSegments->SetMaterial(0, TetherMaterial);
@@ -188,7 +199,7 @@ void ASlinkyActor::BeginPlay()
 	}
 
 	ApplyMaterialTuning();
-	ResetSlinky();
+	ResetSlinky(false);
 	ConfigureConstraints();
 	for (UStaticMeshComponent* Node : PhysicsNodes)
 	{
@@ -263,6 +274,11 @@ bool ASlinkyActor::BeginDrag(const FVector& HitPoint)
 		Node->WakeAllRigidBodies();
 	}
 	bPhysicsActivated = true;
+
+	if (USlinkyGameInstance* GameInstance = GetWorld() ? Cast<USlinkyGameInstance>(GetWorld()->GetGameInstance()) : nullptr)
+	{
+		GameInstance->PlaySfx(ESlinkySfx::Grab);
+	}
 	return true;
 }
 
@@ -274,13 +290,35 @@ void ASlinkyActor::UpdateDragTarget(const FVector& Target)
 
 void ASlinkyActor::EndDrag()
 {
+	// GrabbedBody null already means EndDrag() has nothing to release - most notably, ResetSlinky()
+	// below always calls this first regardless of whether a drag was actually in progress, and a
+	// reset shouldn't also queue a spurious Release blip.
+	const bool bWasDragging = GrabbedBody != nullptr;
 	GrabbedBody = nullptr;
+
+	if (bWasDragging)
+	{
+		if (USlinkyGameInstance* GameInstance = GetWorld() ? Cast<USlinkyGameInstance>(GetWorld()->GetGameInstance()) : nullptr)
+		{
+			GameInstance->PlaySfx(ESlinkySfx::Release);
+		}
+	}
 }
 
-void ASlinkyActor::ResetSlinky()
+void ASlinkyActor::ResetSlinky(bool bPlaySfx)
 {
+	if (bPlaySfx)
+	{
+		if (USlinkyGameInstance* GameInstance = GetWorld() ? Cast<USlinkyGameInstance>(GetWorld()->GetGameInstance()) : nullptr)
+		{
+			GameInstance->PlaySfx(CoilMaterialStyle == ECoilMaterialStyle::PlasticRainbow
+				? ESlinkySfx::ResetPlastic : ESlinkySfx::ResetMetal);
+		}
+	}
 	EndDrag();
-	SuccessfulContacts = 0;
+	// SuccessfulContacts (GetStepCount()) deliberately survives a reset, same reasoning as
+	// BestCombo below - it's the run's overall score (see USlinkyGameInstance::RecordChallengeResult),
+	// so restarting the coil (R, or the pause menu's "リスポーン") must never zero it back out.
 	LastFirstEndStepIndex = MIN_int32;
 	LastLastEndStepIndex = MIN_int32;
 	bPhysicsActivated = false;
@@ -685,10 +723,49 @@ void ASlinkyActor::RebuildHelixSegments()
 	// preserve, so there's no equivalent risk to changing its count on the fly.
 	const int32 DesiredCount = FMath::Max(CoilTurns, 1) * SegmentsPerTurn;
 	HelixSegments->ClearInstances();
+	// Always sized for 3 (RGB) even in Metal style, where the values themselves are never read -
+	// M_SlinkyCoil's RainbowAmount parameter (see SetCoilMaterialStyle) is 0 there, so its Lerp
+	// always resolves to the flat Color parameter regardless of what's in per-instance data.
+	HelixSegments->SetNumCustomDataFloats(3);
 	for (int32 Index = 0; Index < DesiredCount; ++Index)
 	{
 		HelixSegments->AddInstance(FTransform::Identity);
+		if (CoilMaterialStyle == ECoilMaterialStyle::PlasticRainbow)
+		{
+			// A couple of full hue cycles along the coil's length, not one per full CoilTurns turn -
+			// see M_SlinkyCoil's PerInstanceCustomData3Vector node.
+			constexpr float RainbowCycles = 2.0f;
+			const float Hue01 = FMath::Frac(static_cast<float>(Index) / DesiredCount * RainbowCycles);
+			const FLinearColor RainbowColor = FLinearColor::MakeFromHSV8(static_cast<uint8>(Hue01 * 255.0f), 255, 255);
+			HelixSegments->SetCustomDataValue(Index, 0, RainbowColor.R);
+			HelixSegments->SetCustomDataValue(Index, 1, RainbowColor.G);
+			HelixSegments->SetCustomDataValue(Index, 2, RainbowColor.B);
+		}
 	}
+}
+
+void ASlinkyActor::SetCoilMaterialStyle(ECoilMaterialStyle NewStyle)
+{
+	if (CoilMaterialStyle == NewStyle)
+	{
+		return;
+	}
+	CoilMaterialStyle = NewStyle;
+
+	if (UMaterialInstanceDynamic* MID = Cast<UMaterialInstanceDynamic>(HelixSegments->GetMaterial(0)))
+	{
+		const bool bPlastic = NewStyle == ECoilMaterialStyle::PlasticRainbow;
+		MID->SetScalarParameterValue(TEXT("RainbowAmount"), bPlastic ? 1.0f : 0.0f);
+		MID->SetScalarParameterValue(TEXT("Metallic"), bPlastic ? 0.0f : 1.0f);
+		// Plastic is deliberately much rougher than Metal (0.4 vs 0.2) - Metallic alone wasn't
+		// reading as a clear material difference, since a low-roughness dielectric still throws a
+		// sharp, near-mirror specular highlight that looks a lot like chrome at a glance.
+		MID->SetScalarParameterValue(TEXT("Roughness"), bPlastic ? 0.4f : 0.2f);
+	}
+
+	// Reused rather than duplicated: RebuildHelixSegments() is also CoilTurns' own change handler,
+	// and already contains the per-instance rainbow-color loop this style switch needs to (re)run.
+	RebuildHelixSegments();
 }
 
 void ASlinkyActor::RefreshNodeScale()
@@ -860,6 +937,23 @@ void ASlinkyActor::RegisterGroundContact(UPrimitiveComponent* Body, const FHitRe
 		++SuccessfulContacts;
 		const bool bTierUp = RegisterCombo();
 		TriggerStepEffects(Hit.ImpactPoint, bTierUp);
+
+		if (USlinkyGameInstance* GameInstance = GetWorld() ? Cast<USlinkyGameInstance>(GetWorld()->GetGameInstance()) : nullptr)
+		{
+			if (bTierUp)
+			{
+				GameInstance->PlaySfx(ESlinkySfx::ComboTierUp);
+			}
+			else
+			{
+				// Pitch creeps up with the combo, same escalating feel as TriggerStepEffects' bigger
+				// bursts - capped well shy of chipmunk territory even on a very long streak.
+				const float Pitch = 1.0f + FMath::Min(ComboCount * 0.015f, 0.35f);
+				const ESlinkySfx StepSfx = CoilMaterialStyle == ECoilMaterialStyle::PlasticRainbow
+					? ESlinkySfx::StepPlastic : ESlinkySfx::StepMetal;
+				GameInstance->PlaySfx(StepSfx, Pitch);
+			}
+		}
 	}
 }
 

@@ -67,6 +67,11 @@ private:
 	UButton* AddSectionHeader(UPanelWidget* Parent, const FString& Text, FLinearColor Accent, TObjectPtr<UTextBlock>& OutHeaderText);
 	void ToggleSection(UVerticalBox* RowsBox, UPopAnimator* RowsAnim, UTextBlock* HeaderText, const FString& Label);
 
+	// A small button added at the bottom of the slinky section's rows, cycling
+	// ASlinkyActor::ECoilMaterialStyle (Metal <-> PlasticRainbow) on every click and relabeling
+	// itself to name whichever style it just switched *to*.
+	UButton* AddMaterialStyleButton(UPanelWidget* Parent);
+
 	// Creates a fresh UPopAnimator bound to Button's hover/press events and registers it in
 	// Animators so NativeTick keeps advancing it. See UPopAnimator's own comment for why each
 	// button needs its own instance rather than one shared handler.
@@ -74,6 +79,7 @@ private:
 
 	UFUNCTION() void OnStairHeaderClicked();
 	UFUNCTION() void OnSlinkyHeaderClicked();
+	UFUNCTION() void OnMaterialStyleClicked();
 
 	// Builds one pastel row: label, live value readout, and a "-"/"+" button pair, and registers
 	// its state at index (int32)Param in the arrays below. bInteger drops the value readout's
@@ -137,6 +143,9 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UTextBlock> SlinkyHeaderText;
+
+	UPROPERTY()
+	TObjectPtr<UTextBlock> MaterialStyleButtonText;
 
 	UPROPERTY()
 	TObjectPtr<UPopAnimator> StairRowsAnim;

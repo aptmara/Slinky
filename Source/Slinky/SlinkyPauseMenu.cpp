@@ -26,13 +26,17 @@
 #include "Engine/World.h"
 #include "Kismet/GameplayStatics.h"
 
+// Names here are prefixed (Pause*) because a packaged (non-editor) build's Unity build merges
+// several widget .cpp files - each with their own similarly-named anonymous-namespace helpers -
+// into one translation unit, where an unqualified "Shade"/"ButtonRadius" in more than one of them
+// is a redefinition error rather than the per-file-scoped name it is in a normal (non-unity) build.
 namespace
 {
-	constexpr float ButtonRadius = 14.0f;
-	constexpr float ButtonShadowOffset = 5.0f;
-	constexpr float CardWidth = 420.0f;
+	constexpr float PauseButtonRadius = 14.0f;
+	constexpr float PauseButtonShadowOffset = 5.0f;
+	constexpr float PauseCardWidth = 420.0f;
 
-	FLinearColor Shade(const FLinearColor& Color)
+	FLinearColor PauseShade(const FLinearColor& Color)
 	{
 		return FLinearColor(Color.R * 0.55f, Color.G * 0.48f, Color.B * 0.58f, 1.0f);
 	}
@@ -64,19 +68,19 @@ UButton* USlinkyPauseMenu::AddMenuButton(UPanelWidget* Parent, const FString& La
 	UOverlay* Card = WidgetTree->ConstructWidget<UOverlay>(UOverlay::StaticClass());
 
 	UBorder* ShadowLayer = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass());
-	ShadowLayer->SetBrush(FSlateRoundedBoxBrush(Shade(Accent), ButtonRadius));
+	ShadowLayer->SetBrush(FSlateRoundedBoxBrush(PauseShade(Accent), PauseButtonRadius));
 	if (UOverlaySlot* S = Card->AddChildToOverlay(ShadowLayer))
 	{
 		S->SetHorizontalAlignment(HAlign_Fill);
 		S->SetVerticalAlignment(VAlign_Fill);
-		S->SetPadding(FMargin(ButtonShadowOffset, ButtonShadowOffset, 0.0f, 0.0f));
+		S->SetPadding(FMargin(PauseButtonShadowOffset, PauseButtonShadowOffset, 0.0f, 0.0f));
 	}
 
 	UButton* Button = WidgetTree->ConstructWidget<UButton>(UButton::StaticClass());
 	FButtonStyle ButtonStyle = Button->WidgetStyle;
-	ButtonStyle.Normal = FSlateRoundedBoxBrush(Accent, ButtonRadius);
-	ButtonStyle.Hovered = FSlateRoundedBoxBrush(Accent * 1.08f, ButtonRadius);
-	ButtonStyle.Pressed = FSlateRoundedBoxBrush(Accent * 0.85f, ButtonRadius);
+	ButtonStyle.Normal = FSlateRoundedBoxBrush(Accent, PauseButtonRadius);
+	ButtonStyle.Hovered = FSlateRoundedBoxBrush(Accent * 1.08f, PauseButtonRadius);
+	ButtonStyle.Pressed = FSlateRoundedBoxBrush(Accent * 0.85f, PauseButtonRadius);
 	Button->SetStyle(ButtonStyle);
 
 	UTextBlock* Text = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass());
@@ -94,11 +98,11 @@ UButton* USlinkyPauseMenu::AddMenuButton(UPanelWidget* Parent, const FString& La
 	{
 		S->SetHorizontalAlignment(HAlign_Fill);
 		S->SetVerticalAlignment(VAlign_Fill);
-		S->SetPadding(FMargin(0.0f, 0.0f, ButtonShadowOffset, ButtonShadowOffset));
+		S->SetPadding(FMargin(0.0f, 0.0f, PauseButtonShadowOffset, PauseButtonShadowOffset));
 	}
 
 	USizeBox* Sized = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass());
-	Sized->SetWidthOverride(CardWidth - 48.0f);
+	Sized->SetWidthOverride(PauseCardWidth - 48.0f);
 	Sized->SetHeightOverride(56.0f);
 	Sized->SetContent(Card);
 
@@ -117,7 +121,7 @@ UCheckBox* USlinkyPauseMenu::AddToggleRow(UPanelWidget* Parent, const FString& L
 	UOverlay* Card = WidgetTree->ConstructWidget<UOverlay>(UOverlay::StaticClass());
 
 	UBorder* ShadowLayer = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass());
-	ShadowLayer->SetBrush(FSlateRoundedBoxBrush(Shade(Accent), ButtonRadius * 0.7f));
+	ShadowLayer->SetBrush(FSlateRoundedBoxBrush(PauseShade(Accent), PauseButtonRadius * 0.7f));
 	if (UOverlaySlot* S = Card->AddChildToOverlay(ShadowLayer))
 	{
 		S->SetHorizontalAlignment(HAlign_Fill);
@@ -126,7 +130,7 @@ UCheckBox* USlinkyPauseMenu::AddToggleRow(UPanelWidget* Parent, const FString& L
 	}
 
 	UBorder* Foreground = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass());
-	Foreground->SetBrush(FSlateRoundedBoxBrush(Accent, ButtonRadius * 0.7f));
+	Foreground->SetBrush(FSlateRoundedBoxBrush(Accent, PauseButtonRadius * 0.7f));
 	Foreground->SetPadding(FMargin(16.0f, 10.0f));
 	if (UOverlaySlot* S = Card->AddChildToOverlay(Foreground))
 	{
@@ -161,7 +165,7 @@ UCheckBox* USlinkyPauseMenu::AddToggleRow(UPanelWidget* Parent, const FString& L
 	}
 
 	USizeBox* Sized = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass());
-	Sized->SetWidthOverride(CardWidth - 48.0f);
+	Sized->SetWidthOverride(PauseCardWidth - 48.0f);
 	Sized->SetContent(Card);
 
 	if (UVerticalBoxSlot* CardSlot = Cast<UVerticalBoxSlot>(Parent->AddChild(Sized)))
@@ -257,7 +261,7 @@ void USlinkyPauseMenu::NativeOnInitialized()
 
 	const FLinearColor CardFill(0.97f, 0.95f, 0.91f);
 	UBorder* CardShadow = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass());
-	CardShadow->SetBrush(FSlateRoundedBoxBrush(Shade(CardFill), 20.0f));
+	CardShadow->SetBrush(FSlateRoundedBoxBrush(PauseShade(CardFill), 20.0f));
 	if (UOverlaySlot* S = MenuCardOverlay->AddChildToOverlay(CardShadow))
 	{
 		S->SetHorizontalAlignment(HAlign_Fill);
@@ -299,7 +303,7 @@ void USlinkyPauseMenu::NativeOnInitialized()
 	{
 		UOverlay* Card = WidgetTree->ConstructWidget<UOverlay>(UOverlay::StaticClass());
 		UBorder* Shadow = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass());
-		Shadow->SetBrush(FSlateRoundedBoxBrush(Shade(FLinearColor(0.80f, 0.90f, 0.98f)), ButtonRadius * 0.7f));
+		Shadow->SetBrush(FSlateRoundedBoxBrush(PauseShade(FLinearColor(0.80f, 0.90f, 0.98f)), PauseButtonRadius * 0.7f));
 		if (UOverlaySlot* S = Card->AddChildToOverlay(Shadow))
 		{
 			S->SetHorizontalAlignment(HAlign_Fill);
@@ -307,7 +311,7 @@ void USlinkyPauseMenu::NativeOnInitialized()
 			S->SetPadding(FMargin(4.0f, 4.0f, 0.0f, 0.0f));
 		}
 		UBorder* Foreground = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass());
-		Foreground->SetBrush(FSlateRoundedBoxBrush(FLinearColor(0.80f, 0.90f, 0.98f), ButtonRadius * 0.7f));
+		Foreground->SetBrush(FSlateRoundedBoxBrush(FLinearColor(0.80f, 0.90f, 0.98f), PauseButtonRadius * 0.7f));
 		Foreground->SetPadding(FMargin(16.0f, 10.0f));
 		if (UOverlaySlot* S = Card->AddChildToOverlay(Foreground))
 		{
@@ -340,7 +344,7 @@ void USlinkyPauseMenu::NativeOnInitialized()
 		VolumeBox->AddChildToVerticalBox(VolumeSlider);
 
 		USizeBox* Sized = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass());
-		Sized->SetWidthOverride(CardWidth - 48.0f);
+		Sized->SetWidthOverride(PauseCardWidth - 48.0f);
 		Sized->SetContent(Card);
 		if (UVerticalBoxSlot* CardSlot = Cast<UVerticalBoxSlot>(Content->AddChild(Sized)))
 		{
@@ -381,6 +385,12 @@ void USlinkyPauseMenu::TogglePause()
 void USlinkyPauseMenu::SetMenuOpen(bool bOpen)
 {
 	bMenuOpen = bOpen;
+
+	if (USlinkyGameInstance* GameInstance = GetWorld() ? Cast<USlinkyGameInstance>(GetWorld()->GetGameInstance()) : nullptr)
+	{
+		GameInstance->PlaySfx(bOpen ? ESlinkySfx::PauseOpen : ESlinkySfx::PauseClose);
+	}
+
 	if (DimBackground)
 	{
 		DimBackground->SetVisibility(bOpen ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
@@ -455,6 +465,18 @@ void USlinkyPauseMenu::OnRespawnClicked()
 
 void USlinkyPauseMenu::OnResetDefaultsClicked()
 {
+	const UWorld* World = GetWorld();
+	if (const ASlinkyGameMode* GameMode = World ? Cast<ASlinkyGameMode>(World->GetAuthGameMode()) : nullptr)
+	{
+		if (GameMode->IsCustomizationLocked())
+		{
+			// DailyChallenge/Ranked already applied their fixed config at StartPlay and every
+			// other tuning entry point is locked too (see
+			// ASlinkyPlayerController::IsCustomizationLocked) - nothing for this button to do here.
+			return;
+		}
+	}
+
 	if (ASlinkyStaircase* Staircase = FindStaircase())
 	{
 		Staircase->ResetToDefaults();
@@ -483,9 +505,20 @@ void USlinkyPauseMenu::OnSaveAndQuitClicked()
 
 	const ASlinkyActor* Slinky = FindSlinky();
 	const ASlinkyGameMode* GameMode = World ? Cast<ASlinkyGameMode>(World->GetAuthGameMode()) : nullptr;
-	GameInstance->SaveProgress(
-		Slinky ? Slinky->GetBestCombo() : 0,
-		GameMode ? GameMode->GetCurrentDepthMeters() : 0.0f);
+	const int32 BestCombo = Slinky ? Slinky->GetBestCombo() : 0;
+	const float DepthMeters = GameMode ? GameMode->GetCurrentDepthMeters() : 0.0f;
+
+	if (GameMode && GameMode->GetCurrentGameMode() != ESlinkyGameMode::FreePlay)
+	{
+		// DailyChallenge/Ranked runs never touch the single all-time record/continue-point below -
+		// see USlinkyGameInstance::RecordChallengeResult for where their result actually goes.
+		GameInstance->RecordChallengeResult(GameMode->GetCurrentGameMode(),
+			Slinky ? Slinky->GetStepCount() : 0, DepthMeters, BestCombo);
+	}
+	else
+	{
+		GameInstance->SaveProgress(BestCombo, DepthMeters);
+	}
 
 	UGameplayStatics::SetGamePaused(World, false);
 	GameInstance->GoToTitle();

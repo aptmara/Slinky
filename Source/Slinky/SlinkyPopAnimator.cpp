@@ -1,6 +1,8 @@
 #include "SlinkyPopAnimator.h"
+#include "SlinkyGameInstance.h"
 #include "Components/Button.h"
 #include "Components/Widget.h"
+#include "Engine/World.h"
 
 void UPopAnimator::Bind(UWidget* InWidget, float InIdleScale, float InHoverScale, float InPressScale)
 {
@@ -83,6 +85,17 @@ void UPopAnimator::HandleUnhovered()
 void UPopAnimator::HandlePressed()
 {
 	SetTarget(PressScale, false);
+
+	// One injection point covers every button on every screen (title, control panel, pause menu) -
+	// BindButtonEvents() above is what every one of them goes through, and a rows-box pop (which
+	// only ever gets Bind(), never BindButtonEvents()) never reaches HandlePressed at all.
+	if (UWorld* World = GetWorld())
+	{
+		if (USlinkyGameInstance* GameInstance = Cast<USlinkyGameInstance>(World->GetGameInstance()))
+		{
+			GameInstance->PlaySfx(ESlinkySfx::ButtonClick);
+		}
+	}
 }
 
 void UPopAnimator::HandleReleased()

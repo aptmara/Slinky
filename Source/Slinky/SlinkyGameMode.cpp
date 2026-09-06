@@ -17,6 +17,8 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialInterface.h"
+#include "UObject/ConstructorHelpers.h"
 
 ASlinkyGameMode::ASlinkyGameMode()
 {
@@ -24,6 +26,20 @@ ASlinkyGameMode::ASlinkyGameMode()
 	PlayerControllerClass = ASlinkyPlayerController::StaticClass();
 	HUDClass = ASlinkyHUD::StaticClass();
 	PrimaryActorTick.bCanEverTick = true;
+
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> CosmicMaterialFinder(
+		TEXT("/Game/Slinky/M_DepthBackdrop.M_DepthBackdrop"));
+	if (CosmicMaterialFinder.Succeeded())
+	{
+		CosmicBackdropBaseMaterial = CosmicMaterialFinder.Object;
+	}
+
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> RoomMaterialFinder(
+		TEXT("/Game/Slinky/M_RoomBackdrop.M_RoomBackdrop"));
+	if (RoomMaterialFinder.Succeeded())
+	{
+		RoomBackdropBaseMaterial = RoomMaterialFinder.Object;
+	}
 }
 
 void ASlinkyGameMode::StartPlay()
@@ -39,12 +55,34 @@ void ASlinkyGameMode::StartPlay()
 	Staircase = World->SpawnActor<ASlinkyStaircase>(FVector::ZeroVector, FRotator::ZeroRotator);
 	Slinky = World->SpawnActor<ASlinkyActor>(FVector(60.0, 0.0, 0.0), FRotator::ZeroRotator);
 
-	// "つづきから" on the title screen sets this before OpenLevel-ing here; consumed once so a
-	// later in-level restart (R key) doesn't keep re-seeding the record or re-teleporting on top
-	// of wherever the player has since fallen to.
+	// Which ruleset (自由/デイリー/ランク) the title screen selected before OpenLevel-ing here -
+	// consumed once, same reasoning as ConsumePendingContinue below (a later in-level restart must
+	// not re-roll it). DailyChallenge/Ranked immediately overwrite every field ApplyChallengeConfig
+	// touches; "つづきから" only ever applies to FreePlay (GoToGame() itself forces bContinue off
+	// for any other Mode) - continuing a saved FreePlay run into a locked-ruleset mode wouldn't mean
+	// anything anyway.
 	if (USlinkyGameInstance* GameInstance = GetGameInstance<USlinkyGameInstance>())
 	{
-		if (GameInstance->ConsumePendingContinue() && Slinky)
+		CurrentGameMode = GameInstance->ConsumePendingGameMode();
+		switch (CurrentGameMode)
+		{
+		case ESlinkyGameMode::DailyChallenge:
+			ActiveChallengeConfig = GameInstance->GetTodaysChallengeConfig();
+			break;
+		case ESlinkyGameMode::Ranked:
+			ActiveChallengeConfig = FSlinkyChallengeConfig::Defaults();
+			break;
+		default:
+			break;
+		}
+		if (CurrentGameMode != ESlinkyGameMode::FreePlay)
+		{
+			ApplyChallengeConfig(ActiveChallengeConfig);
+			ChallengeTimeRemaining = ChallengeTimeLimitSeconds;
+			LastTimeWarningSecond = -1;
+		}
+
+		if (GameInstance->ConsumePendingContinue() && CurrentGameMode == ESlinkyGameMode::FreePlay && Slinky)
 		{
 			Slinky->ApplyContinueRecord(GameInstance->GetSavedBestCombo());
 			Slinky->TeleportToDepth(GameInstance->GetContinueDepthMeters());
@@ -94,10 +132,9 @@ void ASlinkyGameMode::StartPlay()
 		{
 			Mesh->SetStaticMesh(CubeMesh);
 		}
-		if (UMaterialInterface* CosmicBaseMaterial = LoadObject<UMaterialInterface>(
-			nullptr, TEXT("/Game/Slinky/M_DepthBackdrop.M_DepthBackdrop")))
+		if (CosmicBackdropBaseMaterial)
 		{
-			CosmicBackdropMaterial = UMaterialInstanceDynamic::Create(CosmicBaseMaterial, this);
+			CosmicBackdropMaterial = UMaterialInstanceDynamic::Create(CosmicBackdropBaseMaterial, this);
 			Mesh->SetMaterial(0, CosmicBackdropMaterial);
 		}
 	}
@@ -114,21 +151,73 @@ void ASlinkyGameMode::StartPlay()
 		BackdropMesh->SetCastShadow(false);
 		BackdropMesh->SetRelativeScale3D(FVector(BackdropWidth / 100.0f, 1.0f, BackdropHeight / 100.0f));
 
-		// ConstructorHelpers::FObjectFinder only works inside a UObject constructor; loading here at
-		// runtime needs the plain LoadObject path instead.
 		if (UStaticMesh* CubeMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube")))
 		{
 			BackdropMesh->SetStaticMesh(CubeMesh);
 		}
-		if (UMaterialInterface* BackdropBaseMaterial = LoadObject<UMaterialInterface>(
-			nullptr, TEXT("/Game/Slinky/M_RoomBackdrop.M_RoomBackdrop")))
+		if (RoomBackdropBaseMaterial)
 		{
-			BackdropMaterial = UMaterialInstanceDynamic::Create(BackdropBaseMaterial, this);
+			BackdropMaterial = UMaterialInstanceDynamic::Create(RoomBackdropBaseMaterial, this);
 			BackdropMesh->SetMaterial(0, BackdropMaterial);
 		}
 	}
 
 	SpawnEntranceRoom();
+}
+
+void ASlinkyGameMode::ApplyChallengeConfig(const FSlinkyChallengeConfig& Config)
+{
+	if (Staircase)
+	{
+		Staircase->SetStepDepth(Config.StepDepth);
+		Staircase->SetStepRise(Config.StepRise);
+		Staircase->SetRiserThickness(Config.RiserThickness);
+	}
+
+	if (Slinky)
+	{
+		Slinky->CoilTurns = FMath::RoundToInt(Config.CoilTurns);
+		Slinky->CoilRadius = Config.CoilRadius;
+		Slinky->CompactLength = Config.CompactLength;
+		Slinky->WireRadius = Config.WireRadius;
+		Slinky->AxialStiffnessScale = Config.AxialStiffnessScale;
+		Slinky->BendStiffnessScale = Config.BendStiffnessScale;
+		Slinky->DampingScale = Config.DampingScale;
+		Slinky->Restitution = Config.Restitution;
+		Slinky->Friction = Config.Friction;
+		// Same clamp USlinkyControlPanel::AdjustValue applies for MaxNodeSpacing - never let the
+		// joint's stretch limit sit below the coil's own compact rest spacing.
+		Slinky->MaximumNodeSpacing = FMath::Max(Config.MaximumNodeSpacing, Slinky->GetNodeRestSpacing() + 1.0f);
+
+		Slinky->RebuildHelixSegments();
+		Slinky->RefreshCompactLength();
+		Slinky->RefreshNodeScale();
+		Slinky->RefreshCoilTuning();
+
+		// CoilRadius change: the stairs' own width tracks it (see ASlinkyStaircase::GetCoilRadius),
+		// so a wider/narrower coil needs the treads and risers re-slid to match - same follow-up
+		// USlinkyControlPanel::ApplyValue's CoilRadius case does.
+		if (Staircase)
+		{
+			Staircase->RefreshLayout();
+		}
+	}
+}
+
+void ASlinkyGameMode::FinishChallengeRun()
+{
+	USlinkyGameInstance* GameInstance = GetGameInstance<USlinkyGameInstance>();
+	if (!GameInstance)
+	{
+		return;
+	}
+
+	GameInstance->PlaySfx(ESlinkySfx::TimeUp);
+	GameInstance->RecordChallengeResult(CurrentGameMode,
+		Slinky ? Slinky->GetStepCount() : 0,
+		CurrentDepthMeters,
+		Slinky ? Slinky->GetBestCombo() : 0);
+	GameInstance->GoToTitle();
 }
 
 AStaticMeshActor* ASlinkyGameMode::SpawnBlock(const FVector& Center, const FVector& Size, const TCHAR* MaterialPath)
@@ -337,6 +426,31 @@ void ASlinkyGameMode::Tick(float DeltaTime)
 
 	CurrentDepthMeters = FMath::Max(0.0f, -Slinky->GetCenterLocation().Z / 100.0f);
 	UpdateCosmicView(CurrentDepthMeters);
+
+	if (CurrentGameMode != ESlinkyGameMode::FreePlay && !bChallengeFinished)
+	{
+		ChallengeTimeRemaining = FMath::Max(ChallengeTimeRemaining - DeltaTime, 0.0f);
+
+		// One beep per whole second remaining, only inside the last 10 seconds - see
+		// LastTimeWarningSecond's comment for why a simple "did the integer change" check is enough.
+		constexpr int32 WarningThresholdSeconds = 10;
+		const int32 WholeSecondsRemaining = FMath::CeilToInt(ChallengeTimeRemaining);
+		if (WholeSecondsRemaining <= WarningThresholdSeconds && WholeSecondsRemaining > 0
+			&& WholeSecondsRemaining != LastTimeWarningSecond)
+		{
+			LastTimeWarningSecond = WholeSecondsRemaining;
+			if (USlinkyGameInstance* GameInstance = GetGameInstance<USlinkyGameInstance>())
+			{
+				GameInstance->PlaySfx(ESlinkySfx::TimeWarning);
+			}
+		}
+
+		if (ChallengeTimeRemaining <= 0.0f)
+		{
+			bChallengeFinished = true;
+			FinishChallengeRun();
+		}
+	}
 
 	// Recentered every tick on the camera itself (not the coil, which the camera trails via its
 	// dead zone) so neither card ever falls out of alignment with what's actually on screen.

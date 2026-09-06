@@ -1,6 +1,7 @@
 #include "SlinkyPlayerController.h"
 #include "SlinkyActor.h"
 #include "SlinkyControlPanel.h"
+#include "SlinkyGameMode.h"
 #include "SlinkyPauseMenu.h"
 #include "SlinkyStaircase.h"
 #include "Camera/CameraActor.h"
@@ -85,6 +86,12 @@ void ASlinkyPlayerController::PlayerTick(float DeltaTime)
 	{
 		ControlPanel->SetTargets(Staircase, Slinky);
 		bControlPanelTargetsSet = true;
+		// DailyChallenge/Ranked already applied their fixed config in ASlinkyGameMode::StartPlay -
+		// hide the panel entirely rather than leave it showing (now-uneditable) numbers.
+		if (IsCustomizationLocked())
+		{
+			ControlPanel->SetVisibility(ESlateVisibility::Collapsed);
+		}
 	}
 	if (!Slinky || !Slinky->IsDragging())
 	{
@@ -137,9 +144,15 @@ void ASlinkyPlayerController::AcquireStaircase()
 	}
 }
 
+bool ASlinkyPlayerController::IsCustomizationLocked() const
+{
+	const ASlinkyGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<ASlinkyGameMode>() : nullptr;
+	return GameMode && GameMode->IsCustomizationLocked();
+}
+
 void ASlinkyPlayerController::IncreaseStepDepth()
 {
-	if (Staircase)
+	if (Staircase && !IsCustomizationLocked())
 	{
 		Staircase->SetStepDepth(FMath::Max(Staircase->StepDepth + 2.0f, 20.0f));
 	}
@@ -147,7 +160,7 @@ void ASlinkyPlayerController::IncreaseStepDepth()
 
 void ASlinkyPlayerController::DecreaseStepDepth()
 {
-	if (Staircase)
+	if (Staircase && !IsCustomizationLocked())
 	{
 		Staircase->SetStepDepth(FMath::Max(Staircase->StepDepth - 2.0f, 20.0f));
 	}
@@ -155,7 +168,7 @@ void ASlinkyPlayerController::DecreaseStepDepth()
 
 void ASlinkyPlayerController::IncreaseStepRise()
 {
-	if (Staircase)
+	if (Staircase && !IsCustomizationLocked())
 	{
 		Staircase->SetStepRise(FMath::Max(Staircase->StepRise + 2.0f, 10.0f));
 	}
@@ -163,7 +176,7 @@ void ASlinkyPlayerController::IncreaseStepRise()
 
 void ASlinkyPlayerController::DecreaseStepRise()
 {
-	if (Staircase)
+	if (Staircase && !IsCustomizationLocked())
 	{
 		Staircase->SetStepRise(FMath::Max(Staircase->StepRise - 2.0f, 10.0f));
 	}
@@ -171,7 +184,7 @@ void ASlinkyPlayerController::DecreaseStepRise()
 
 void ASlinkyPlayerController::IncreaseRiserThickness()
 {
-	if (Staircase)
+	if (Staircase && !IsCustomizationLocked())
 	{
 		Staircase->SetRiserThickness(FMath::Max(Staircase->RiserThickness + 1.0f, 1.0f));
 	}
@@ -179,7 +192,7 @@ void ASlinkyPlayerController::IncreaseRiserThickness()
 
 void ASlinkyPlayerController::DecreaseRiserThickness()
 {
-	if (Staircase)
+	if (Staircase && !IsCustomizationLocked())
 	{
 		Staircase->SetRiserThickness(FMath::Max(Staircase->RiserThickness - 1.0f, 1.0f));
 	}
@@ -187,7 +200,7 @@ void ASlinkyPlayerController::DecreaseRiserThickness()
 
 void ASlinkyPlayerController::CycleCoilTuningParam()
 {
-	if (Slinky)
+	if (Slinky && !IsCustomizationLocked())
 	{
 		Slinky->CycleTuningParam();
 	}
@@ -195,7 +208,7 @@ void ASlinkyPlayerController::CycleCoilTuningParam()
 
 void ASlinkyPlayerController::IncreaseCoilTuningParam()
 {
-	if (Slinky)
+	if (Slinky && !IsCustomizationLocked())
 	{
 		Slinky->AdjustTuningParam(1.0f);
 	}
@@ -203,7 +216,7 @@ void ASlinkyPlayerController::IncreaseCoilTuningParam()
 
 void ASlinkyPlayerController::DecreaseCoilTuningParam()
 {
-	if (Slinky)
+	if (Slinky && !IsCustomizationLocked())
 	{
 		Slinky->AdjustTuningParam(-1.0f);
 	}

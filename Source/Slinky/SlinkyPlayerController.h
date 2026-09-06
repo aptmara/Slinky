@@ -30,6 +30,10 @@ protected:
 private:
 	void AcquireSlinky();
 	void AcquireStaircase();
+	// DailyChallenge/Ranked lock every customization entry point (keyboard tuning below, and the
+	// on-screen ControlPanel - see PlayerTick) since a leaderboard only means something if everyone
+	// on it played the same slinky. See ASlinkyGameMode::IsCustomizationLocked.
+	bool IsCustomizationLocked() const;
 	void BeginDrag();
 	void EndDrag();
 	void RestartSlinky();

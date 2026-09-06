@@ -13,11 +13,6 @@
 
 namespace
 {
-	// GetSmallFont()'s old flat-1x calls now go through ComboFont at this scale instead - YuseiMagic
-	// bakes noticeably larger glyphs than the engine's tiny debug font, so every former "small font"
-	// line needs shrinking down to roughly its old on-screen size.
-	constexpr float SmallFontScale = 0.5f;
-
 	// YuseiMagic-Regular_Font is a Runtime (Slate/CompositeFont) font, so Canvas::DrawText's
 	// XScale/YScale multiplier isn't re-rendering a vector outline at each call - it's stretching an
 	// already-rasterized glyph bitmap cached at the font's LegacyFontSize. That size shipped as the
@@ -61,91 +56,64 @@ void ASlinkyHUD::DrawHUD()
 	// the combo banner - reads as one consistent, poppy style rather than debug-font labels sitting
 	// next to a comic-book combo counter.
 	UFont* const DisplayFont = ComboFont ? ComboFont.Get() : GEngine->GetLargeFont();
-	UFont* const SmallDisplayFont = ComboFont ? ComboFont.Get() : GEngine->GetSmallFont();
 	// Only ComboFont needs the LegacyFontSize correction - GEngine's built-in fonts are unaffected,
-	// so this is 1 whenever ComboFont failed to load and DisplayFont/SmallDisplayFont fell back to them.
+	// so this is 1 whenever ComboFont failed to load and DisplayFont fell back to one of them.
 	const float FontCorrection = ComboFont ? LegacyFontSizeCorrection : 1.0f;
-	const float SmallScale = (ComboFont ? SmallFontScale : 1.0f) * FontCorrection;
 
-	// Bounces above 1x on every landed step and springs back down (see ASlinkyActor::RegisterCombo/
-	// SpringToward) instead of drawing at a flat scale, so each step reads as a little "pop".
-	const float StepScale = Slinky->GetStepPopScale() * FontCorrection;
-	const FText CountText = FText::FromString(FString::Printf(TEXT("%d steps"), Slinky->GetStepCount()));
-	Canvas->SetDrawColor(FColor(232, 235, 238));
-	Canvas->DrawText(DisplayFont, CountText, 44.0f, 38.0f, StepScale, StepScale);
-
-	// Current fall depth, in the same "meters below the top step" convention as the title screen's
-	// saved-record readout and ASlinkyGameMode::GetCurrentDepthMeters() - so continuing later can
-	// promise "starts from that depth" and mean something the player already saw on screen here.
-	// Bottom-left and large - a constant, easy-to-glance-at readout rather than a small debug line.
+	// Bottom-left, stacked: step count directly above the current depth, both at the same large
+	// size - a matched pair of constant, easy-to-glance-at readouts rather than a small top-left
+	// debug line.
 	if (const ASlinkyGameMode* GameMode = Cast<ASlinkyGameMode>(GetWorld()->GetAuthGameMode()))
 	{
 		constexpr float Margin = 44.0f;
 		const float DepthScale = 5.5f * FontCorrection;
 		const FString DepthString = FString::Printf(TEXT("%.0fm"), GameMode->GetCurrentDepthMeters());
-		float TextWidth = 0.0f, TextHeight = 0.0f;
-		Canvas->TextSize(DisplayFont, DepthString, TextWidth, TextHeight, DepthScale, DepthScale);
+		const FString StepsString = FString::Printf(TEXT("%d steps"), Slinky->GetStepCount());
+
+		float DepthTextWidth = 0.0f, DepthTextHeight = 0.0f;
+		Canvas->TextSize(DisplayFont, DepthString, DepthTextWidth, DepthTextHeight, DepthScale, DepthScale);
+		float StepsTextWidth = 0.0f, StepsTextHeight = 0.0f;
+		Canvas->TextSize(DisplayFont, StepsString, StepsTextWidth, StepsTextHeight, DepthScale, DepthScale);
+
+		const float DepthY = static_cast<float>(Canvas->SizeY) - Margin - DepthTextHeight;
+		const float StepsY = DepthY - StepsTextHeight;
+
 		Canvas->SetDrawColor(FColor(232, 235, 238));
-		Canvas->DrawText(DisplayFont, FText::FromString(DepthString), Margin,
-			static_cast<float>(Canvas->SizeY) - Margin - TextHeight, DepthScale, DepthScale);
+		Canvas->DrawText(DisplayFont, FText::FromString(StepsString), Margin, StepsY, DepthScale, DepthScale);
+		Canvas->DrawText(DisplayFont, FText::FromString(DepthString), Margin, DepthY, DepthScale, DepthScale);
+
+		// Top-right, same size as the depth/steps readout: which ruleset is active, and (directly
+		// below the challenge name) its countdown - only shown outside FreePlay, where every
+		// customization entry point is locked (see ASlinkyGameMode::IsCustomizationLocked), so the
+		// player always has an on-screen sign this run is being played under fixed rules and a
+		// clock.
+		if (GameMode->GetCurrentGameMode() != ESlinkyGameMode::FreePlay)
+		{
+			const FString ModeLabel = GameMode->GetCurrentGameMode() == ESlinkyGameMode::DailyChallenge
+				? FString::Printf(TEXT("デイリー：%s"), *GameMode->GetActiveChallengeConfig().PresetName)
+				: FString(TEXT("ランクに挑戦"));
+			const int32 RemainingSeconds = FMath::CeilToInt(GameMode->GetChallengeTimeRemaining());
+			const FString TimerString = FString::Printf(TEXT("残り %02d:%02d"), RemainingSeconds / 60, RemainingSeconds % 60);
+
+			float ModeTextWidth = 0.0f, ModeTextHeight = 0.0f;
+			Canvas->TextSize(DisplayFont, ModeLabel, ModeTextWidth, ModeTextHeight, DepthScale, DepthScale);
+			float TimerTextWidth = 0.0f, TimerTextHeight = 0.0f;
+			Canvas->TextSize(DisplayFont, TimerString, TimerTextWidth, TimerTextHeight, DepthScale, DepthScale);
+
+			const float ModeX = static_cast<float>(Canvas->SizeX) - Margin - ModeTextWidth;
+			const float ModeY = Margin;
+			const float TimerX = static_cast<float>(Canvas->SizeX) - Margin - TimerTextWidth;
+			const float TimerY = ModeY + ModeTextHeight;
+
+			Canvas->DrawText(DisplayFont, FText::FromString(ModeLabel), ModeX, ModeY, DepthScale, DepthScale);
+			Canvas->DrawText(DisplayFont, FText::FromString(TimerString), TimerX, TimerY, DepthScale, DepthScale);
+		}
 	}
 
 	const USlinkyGameInstance* GameInstance = GetWorld() ? Cast<USlinkyGameInstance>(GetWorld()->GetGameInstance()) : nullptr;
 	if (!GameInstance || GameInstance->IsComboDisplayEnabled())
 	{
 		DrawComboBanner(Slinky);
-	}
-
-	Canvas->SetDrawColor(FColor(182, 188, 194));
-	Canvas->DrawText(SmallDisplayFont, FText::FromString(
-		TEXT("drag the slinky  /  R to restart  /  arrows: depth,rise  PgUp/PgDn: riser  Tab+[ ]: coil")),
-		46.0f, 88.0f, SmallScale, SmallScale);
-
-	ASlinkyStaircase* Staircase = nullptr;
-	for (TActorIterator<ASlinkyStaircase> It(GetWorld()); It; ++It)
-	{
-		Staircase = *It;
-		break;
-	}
-	if (Staircase)
-	{
-		Canvas->DrawText(SmallDisplayFont, FText::FromString(FString::Printf(
-			TEXT("depth %.0f  rise %.0f  riser %.0f"),
-			Staircase->StepDepth, Staircase->StepRise, Staircase->RiserThickness)), 46.0f, 106.0f,
-			SmallScale, SmallScale);
-	}
-
-	Canvas->SetDrawColor(FColor(150, 210, 190));
-	Canvas->DrawText(SmallDisplayFont, FText::FromString(
-		FString::Printf(TEXT("coil: %s"), *Slinky->GetTuningParamDisplay())), 46.0f, 124.0f,
-		SmallScale, SmallScale);
-
-	if (const ASlinkyGameMode* SlinkyGameMode = GetWorld()->GetAuthGameMode<ASlinkyGameMode>())
-	{
-		Canvas->SetDrawColor(FColor(255, 176, 122));
-		Canvas->DrawText(SmallDisplayFont, FText::FromString(FString::Printf(
-			TEXT("depth %.1fm"), SlinkyGameMode->GetCurrentDepthMeters())), 46.0f, 142.0f,
-			SmallScale, SmallScale);
-	}
-
-	// Debug readout: proves on screen whether the view the renderer actually uses is tracking the
-	// coil. GetPlayerViewPoint is the exact value the local player renders from, so if these two
-	// lines move together the camera is following and any missing geometry is a render issue; if
-	// the view line stays frozen while the coil line changes, the camera itself is not updating.
-	if (APlayerController* PC = GetOwningPlayerController())
-	{
-		FVector ViewLocation;
-		FRotator ViewRotation;
-		PC->GetPlayerViewPoint(ViewLocation, ViewRotation);
-
-		const FVector CoilLocation = Slinky->GetCenterLocation();
-		Canvas->SetDrawColor(FColor(255, 214, 120));
-		Canvas->DrawText(SmallDisplayFont, FText::FromString(FString::Printf(
-			TEXT("view  X %.0f  Z %.0f"), ViewLocation.X, ViewLocation.Z)), 46.0f, 166.0f,
-			SmallScale, SmallScale);
-		Canvas->DrawText(SmallDisplayFont, FText::FromString(FString::Printf(
-			TEXT("coil  X %.0f  Z %.0f"), CoilLocation.X, CoilLocation.Z)), 46.0f, 190.0f,
-			SmallScale, SmallScale);
 	}
 }
 
